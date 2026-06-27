@@ -1,3 +1,5 @@
+pub mod embeddings;
+
 use axum::{
     routing::post,
     Router,
@@ -12,8 +14,10 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::convert::Infallible;
+use crate::embeddings::SemanticEmbedder;
 
-// --- SEMANTIC CACHE DATA STRUCTURES ---
+const SIMILARITY_THRESHOLD: f32 = 0.92;
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct CacheItem {
     prompt: String,
@@ -22,7 +26,8 @@ struct CacheItem {
 }
 
 struct AppState {
-    index: RwLock<Vec<CacheItem>>,
+    embedder: SemanticEmbedder,
+    cache_store: RwLock<Vec<CacheItem>>,
     client: Client,
 }
 
@@ -30,8 +35,12 @@ struct AppState {
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    println!("Initializing BGE Local Embedding Weights...");
+    let embedder = SemanticEmbedder::load().expect("Failed to bind local model weights");
+
     let shared_state = Arc::new(AppState {
-        index: RwLock::new(Vec::new()),
+        embedder,
+        cache_store: RwLock::new(Vec::new()),
         client: Client::new(),
     });
 
@@ -40,9 +49,13 @@ async fn main() {
         .with_state(shared_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
-    println!("StackIntercept engine online | Production SSE engine on http://{}", addr);
+    println!("StackIntercept online at http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f32 {
+    v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum()
 }
 
 async fn handle_intercept(
@@ -54,7 +67,6 @@ async fn handle_intercept(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
-    // 1. Extract prompt string safely from OpenAI structure
     let prompt = payload["messages"]
         .as_array()
         .and_then(|msg| msg.last())
@@ -64,15 +76,19 @@ async fn handle_intercept(
 
     let is_streaming = payload["stream"].as_bool().unwrap_or(false);
 
-    // TODO: Wire your Candle embedding generator here:
-    // let current_vector = embedder.gen(prompt);
+    // Generate real-time semantic vector mapping
+    let current_vector = match state.embedder.generate_vector(&prompt) {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Vector mapping failure").into_response(),
+    };
 
-    // 2. Perform string-match scan against your state vector store
+    // Scan vector space for high-affinity matches
     {
-        let cache = state.index.read().unwrap();
-        for item in cache.iter() {
-            if item.prompt == prompt {
-                println!("Cache HIT for stackintercept: Return immediate zero-overhead response!");
+        let storage = state.cache_store.read().unwrap();
+        for item in storage.iter() {
+            let score = cosine_similarity(&current_vector, &item.vector);
+            if score >= SIMILARITY_THRESHOLD {
+                println!("Semantic HIT! Similarity Score: {:.4}. Bypassing upstream latency entirely.", score);
                 if is_streaming {
                     return handle_cached_stream(item.completion_response.clone()).into_response();
                 } else {
@@ -82,7 +98,7 @@ async fn handle_intercept(
         }
     }
 
-    // 3. Cache MISS -> Forward request to upstream provider
+    // Cache MISS -> Pipe out to OpenAI
     let upstream_res = state.client.post("https://api.openai.com/v1/chat/completions")
         .header("authorization", orig_auth)
         .json(&payload)
@@ -95,68 +111,51 @@ async fn handle_intercept(
 
             if is_streaming {
                 let prompt_clone = prompt.clone();
+                let vector_clone = current_vector.clone();
                 let state_clone = Arc::clone(&state);
-                let buffered_stream_content = Arc::new(std::sync::Mutex::new(String::new()));
+                let mut buffered_stream_content = String::new();
 
-                let stream = res.bytes_stream().map({
-                    let buf = Arc::clone(&buffered_stream_content);
-                    let prompt = prompt_clone.clone();
-                    let st = Arc::clone(&state_clone);
-                    move |chunk_result| {
-                        match chunk_result {
-                            Ok(bytes) => {
-                                let raw_str = String::from_utf8_lossy(&bytes).to_string();
-                                // Concurrently buffer raw SSE chunks into string memory space
-                                if let Ok(mut buf_guard) = buf.lock() {
-                                    buf_guard.push_str(&raw_str);
-                                }
+                let stream = res.bytes_stream().map(move |chunk_result| {
+                    match chunk_result {
+                        Ok(bytes) => {
+                            let raw_str = String::from_utf8_lossy(&bytes).to_string();
+                            buffered_stream_content.push_str(&raw_str);
 
-                                // Look for end of stream indicator to safely commit response to cache
-                                if raw_str.contains("[DONE]") {
-                                    let final_content = {
-                                        let guard = buf.lock().unwrap_or_else(|e| e.into_inner());
-                                        guard.clone()
-                                    };
-                                    let mut index_write = st.index.write().unwrap();
-                                    index_write.push(CacheItem {
-                                        prompt: prompt.clone(),
-                                        vector: vec![0.0], // Fill with real Candle vector outputs in step 3
-                                        completion_response: final_content,
-                                    });
-                                    println!("Stream complete. Saved to StackIntercept cache.");
-                                }
-                                Ok::<Event, Infallible>(Event::default().data(raw_str))
-                            },
-                            Err(_) => Ok(Event::default().data("[ERROR]")),
-                        }
+                            if raw_str.contains("[DONE]") {
+                                let mut writer = state_clone.cache_store.write().unwrap();
+                                writer.push(CacheItem {
+                                    prompt: prompt_clone.clone(),
+                                    vector: vector_clone.clone(),
+                                    completion_response: buffered_stream_content.clone(),
+                                });
+                                println!("Stream cached via semantic coordinates.");
+                            }
+                            Ok::<Event, Infallible>(Event::default().data(raw_str))
+                        },
+                        Err(_) => Ok(Event::default().data("[ERROR]")),
                     }
                 });
                 return Sse::new(stream).into_response();
             }
 
-            // Non-stream handler
             let bytes = res.bytes().await.unwrap_or_default();
             let res_str = String::from_utf8_lossy(&bytes).to_string();
 
-            // Commit flat non-streaming response directly to cache
-            let mut index_write = state.index.write().unwrap();
-            index_write.push(CacheItem {
-                prompt: prompt.clone(),
-                vector: vec![0.0],
+            let mut writer = state.cache_store.write().unwrap();
+            writer.push(CacheItem {
+                prompt: prompt.to_string(),
+                vector: current_vector,
                 completion_response: res_str.clone(),
             });
 
             (status, res_str).into_response()
         }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "StackIntercept gateway drop").into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Upstream Timeout").into_response(),
     }
 }
 
-// Emulate an ultra-fast local OpenAI Server-Sent Event stream using tokens out of memory storage
 fn handle_cached_stream(cached_raw_sse: String) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     let lines: Vec<String> = cached_raw_sse.lines().map(|s| s.to_string()).collect();
-    let stream = futures_util::stream::iter(lines).map(|line| {
-        Ok(Event::default().data(line))
-    });
+    let stream = futures_util::stream::iter(lines).map(|line| Ok(Event::default().data(line)));
     Sse::new(stream)
 }

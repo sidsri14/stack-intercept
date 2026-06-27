@@ -1,7 +1,6 @@
 """
-StackIntercept proxy verification script.
-Run this with your proxy running at localhost:8080.
-First run = cache miss (routes to OpenAI). Second run = cache hit (sub-ms local).
+StackIntercept semantic cache verification.
+Run 1: cache miss (cold). Run 2: cache hit via BGE embedding similarity >0.92.
 """
 
 import openai
@@ -12,11 +11,15 @@ client = openai.OpenAI(
     api_key="your-actual-openai-api-key"
 )
 
-prompt = "Analyze the technical trade-offs between eBPF and kernel bypass for high-frequency packet processing."
+prompts = [
+    "Explain the latency benefits of kernel bypass architecture.",
+    "What are the speed advantages of using kernel bypass architectures?",
+]
 
-for run in range(2):
+for i, prompt in enumerate(prompts):
     print(f"\n{'='*60}")
-    print(f"RUN {run + 1} — {'Cache Miss (cold)' if run == 0 else 'Cache Hit (warm)'}")
+    print(f"RUN {i + 1} — {'Cache Miss (cold)' if i == 0 else 'Cache Hit (semantic match expected)'}")
+    print(f"Prompt: {prompt}")
     print('='*60)
 
     start = time.time()
