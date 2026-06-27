@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StackIntercept — Zero-latency LLM proxy</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            color: #e0e0e0;
+            font-family: -apple-system, 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+        .container {
+            max-width: 720px;
+            width: 100%;
+        }
+        header {
+            padding: 4rem 0 3rem;
+            border-bottom: 1px solid #1a1a1a;
+            margin-bottom: 3rem;
+        }
+        .logo {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #fff;
+            letter-spacing: -0.5px;
+        }
+        .logo span {
+            color: #555;
+        }
+        h1 {
+            font-size: 2.5rem;
+            line-height: 1.2;
+            color: #fff;
+            font-weight: 600;
+            letter-spacing: -1px;
+            margin-top: 2rem;
+        }
+        .subtitle {
+            font-size: 1rem;
+            color: #666;
+            margin-top: 1rem;
+            line-height: 1.6;
+        }
+        .benchmark {
+            background: #111;
+            border: 1px solid #1a1a1a;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 2.5rem 0;
+            font-size: 0.875rem;
+        }
+        .benchmark-line {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.5rem 0;
+            color: #888;
+        }
+        .benchmark-line .arrow {
+            color: #444;
+        }
+        .benchmark-line .green {
+            color: #4ade80;
+        }
+        .benchmark-line .red {
+            color: #f87171;
+        }
+        .benchmark-line .dim {
+            color: #555;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1px;
+            background: #1a1a1a;
+            margin: 2.5rem 0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .stat {
+            background: #111;
+            padding: 1.5rem;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 1.75rem;
+            font-weight: 600;
+            color: #fff;
+        }
+        .stat-label {
+            font-size: 0.75rem;
+            color: #555;
+            margin-top: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .features {
+            margin: 2.5rem 0;
+        }
+        .feature {
+            padding: 1rem 0;
+            border-bottom: 1px solid #111;
+            display: flex;
+            gap: 1rem;
+        }
+        .feature-marker {
+            color: #333;
+        }
+        .feature-text {
+            color: #aaa;
+        }
+        .feature-text strong {
+            color: #e0e0e0;
+            font-weight: 500;
+        }
+        .cta {
+            background: #111;
+            border: 1px solid #222;
+            border-radius: 8px;
+            padding: 2rem;
+            margin: 3rem 0;
+            text-align: center;
+        }
+        .cta h2 {
+            color: #fff;
+            font-size: 1.25rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+        .cta p {
+            color: #555;
+            font-size: 0.875rem;
+            margin-bottom: 1.5rem;
+        }
+        .cta form {
+            display: flex;
+            gap: 0.5rem;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+        .cta input {
+            flex: 1;
+            background: #0a0a0a;
+            border: 1px solid #222;
+            border-radius: 4px;
+            padding: 0.75rem 1rem;
+            color: #e0e0e0;
+            font-family: inherit;
+            font-size: 0.875rem;
+        }
+        .cta input:focus {
+            outline: none;
+            border-color: #444;
+        }
+        .cta button {
+            background: #e0e0e0;
+            color: #0a0a0a;
+            border: none;
+            border-radius: 4px;
+            padding: 0.75rem 1.5rem;
+            font-family: inherit;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .cta button:hover {
+            background: #fff;
+        }
+        footer {
+            padding: 2rem 0;
+            font-size: 0.75rem;
+            color: #333;
+            text-align: center;
+        }
+        @media (max-width: 600px) {
+            h1 { font-size: 1.75rem; }
+            .stats { grid-template-columns: 1fr; }
+            .cta form { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">stackintercept <span>//</span> dev</div>
+            <h1>Zero-latency proxy for your LLM stack.</h1>
+            <div class="subtitle">
+                Drop-in Rust proxy. Sub-millisecond semantic cache.<br>
+                30–40% off your API bill. One line of config to test.
+            </div>
+        </header>
+
+        <div class="benchmark">
+            <div class="benchmark-line">
+                <span class="red">✗</span>
+                <span>raw openai — 100 identical prompts</span>
+                <span class="dim">avg 1.2s per call · $0.42 total</span>
+            </div>
+            <div class="benchmark-line">
+                <span class="green">✓</span>
+                <span>via stackintercept (cache hit)</span>
+                <span class="dim">avg 1.8ms per call · $0.00 API cost</span>
+            </div>
+            <div class="benchmark-line" style="border-top: 1px solid #1a1a1a; margin-top: 0.5rem; padding-top: 1rem;">
+                <span class="arrow">→</span>
+                <span class="green">99.8% latency eliminated</span>
+            </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-number">&lt;2ms</div>
+                <div class="stat-label">added overhead</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number">384-dim</div>
+                <div class="stat-label">local embeddings (candle)</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number">~35%</div>
+                <div class="stat-label">avg API cost reduction</div>
+            </div>
+        </div>
+
+        <div class="features">
+            <div class="feature">
+                <div class="feature-marker">$</div>
+                <div class="feature-text"><strong>Drop-in.</strong> Change <code>base_url</code> in your OpenAI/Anthropic SDK client. That's it.</div>
+            </div>
+            <div class="feature">
+                <div class="feature-marker">$</div>
+                <div class="feature-text"><strong>Zero-copy.</strong> Pure Rust async proxy. No JVM, no Python, no overhead.</div>
+            </div>
+            <div class="feature">
+                <div class="feature-marker">$</div>
+                <div class="feature-text"><strong>Semantic cache.</strong> Local Candle embeddings + HNSW index. Sub-millisecond similarity search.</div>
+            </div>
+            <div class="feature">
+                <div class="feature-marker">$</div>
+                <div class="feature-text"><strong>Dynamic routing.</strong> Cheap model for simple prompts. Premium model for complex reasoning.</div>
+            </div>
+            <div class="feature">
+                <div class="feature-marker">$</div>
+                <div class="feature-text"><strong>Single binary.</strong> Deploy on any x86-64 Linux VPS. No dependencies.</div>
+            </div>
+        </div>
+
+        <div class="cta">
+            <h2>Early access</h2>
+            <p>Drop your email. We'll send you the binary and a 7-day trial key.</p>
+            <form action="#" method="post">
+                <input type="email" placeholder="you@company.com" required>
+                <button type="submit">Get early access</button>
+            </form>
+        </div>
+
+        <footer>
+            stackintercept.com &mdash; Rust-native LLM proxy engine
+        </footer>
+    </div>
+</body>
+</html>
