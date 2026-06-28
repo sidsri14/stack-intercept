@@ -322,10 +322,11 @@ async fn handle_intercept(
 
     // Pick the right auth key for the destination
     let final_auth = if route.needs_fallback_key {
-        match &state.config.fallback_api_key {
-            Some(k) => as_bearer(k),
-            None => orig_auth.to_string(),
-        }
+        as_bearer(
+            state.config.fallback_api_key
+                .as_ref()
+                .expect("fallback route requires fallback_api_key")
+        )
     } else {
         orig_auth.to_string()
     };
