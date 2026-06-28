@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 PROXY_PORT = 8080
@@ -26,6 +27,7 @@ FAIL = 0
 
 mock_request_count = 0
 mock_request_lock = threading.Lock()
+
 mock_response = {
     "id": "mock-cmpl-001",
     "object": "chat.completion",
@@ -48,18 +50,33 @@ mock_response = {
 
 
 class MockHandler(http.server.BaseHTTPRequestHandler):
+    # Class-level one-shot override. Set via MockHandler.set_override().
+    # Consumed on first do_POST call.
+    override = None
+    override_lock = threading.Lock()
+
+    @classmethod
+    def set_override(cls, status, headers_list, body):
+        """Set a one-shot override for the next mock request."""
+        with cls.override_lock:
+            cls.override = (status, headers_list, body)
+
     def do_POST(self):
         global mock_request_count
         content_len = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_len)
-        # Verify it's valid JSON
-        try:
-            json.loads(body)
-        except json.JSONDecodeError:
-            self.send_response(400)
-            self.end_headers()
-            self.wfile.write(b'{"error": "bad request"}')
-            return
+        self.rfile.read(content_len)
+
+        # Check one-shot override (class-level)
+        with MockHandler.override_lock:
+            if MockHandler.override is not None:
+                status, headers_list, resp_body = MockHandler.override
+                MockHandler.override = None
+                self.send_response(status)
+                for k, v in headers_list:
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(resp_body)
+                return
 
         with mock_request_lock:
             mock_request_count += 1
@@ -71,6 +88,11 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass  # Suppress mock server logs
+
+
+def set_override(status, headers_list, body):
+    """Set a one-shot override for the next mock request."""
+    MockHandler.set_override(status, headers_list, body)
 
 
 def start_mock():
@@ -86,10 +108,12 @@ def proxy_binary():
     return base + ".exe" if sys.platform == "win32" else base
 
 
-def start_proxy():
+def start_proxy(extra_env=None):
     env = os.environ.copy()
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
     env["STACK_INTERCEPT_UPSTREAM_URL"] = f"http://127.0.0.1:{MOCK_PORT}"
+    if extra_env:
+        env.update(extra_env)
     proc = subprocess.Popen(
         [proxy_binary()],
         env=env,
@@ -115,12 +139,15 @@ def wait_for(url, timeout=15):
     return False
 
 
-def send_request(payload):
+def send_request(payload, extra_headers=None):
     data = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer mock-key"}
+    if extra_headers:
+        headers.update(extra_headers)
     req = urllib.request.Request(
         PROXY_URL,
         data=data,
-        headers={"Content-Type": "application/json", "Authorization": "Bearer mock-key"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -143,8 +170,161 @@ def check(name, cond, detail=""):
         print(f"  FAIL: {name} {detail}")
 
 
-def main():
+def run_basic_tests():
+    """Tests 1-4: basic exact cache hit/miss behavior."""
+    payload = {
+        "model": "mock-model",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "temperature": 0,
+        "stream": False,
+    }
+
+    # === Test 1: First request should be a cache miss ===
+    print("=" * 60)
+    print("Test 1: First request — cache miss")
+    hit, status, _ = send_request(payload)
+    check("x-stack-intercept is not hit", hit != "hit", f"(got: {hit})")
+    check("status is 200", status == 200, f"(status: {status})")
+    print()
+
+    # === Test 2: Second identical request should be a cache hit ===
+    print("=" * 60)
+    print("Test 2: Second request — exact cache hit")
+    hit, status, _ = send_request(payload)
+    check("x-stack-intercept is hit", hit == "hit", f"(got: {hit})")
+    check("status is 200", status == 200, f"(status: {status})")
+    print()
+
+    # === Test 3: Mock should have received exactly 1 request ===
+    print("=" * 60)
+    print("Test 3: Mock upstream call count")
+    check("only 1 upstream call", mock_request_count == 1, f"(count: {mock_request_count})")
+    print()
+
+    # === Test 4: Different prompt should miss ===
+    print("=" * 60)
+    print("Test 4: Different prompt — cache miss")
+    payload2 = {
+        "model": "mock-model",
+        "messages": [{"role": "user", "content": "Different query"}],
+        "temperature": 0,
+        "stream": False,
+    }
+    hit, status, _ = send_request(payload2)
+    check("x-stack-intercept is not hit", hit != "hit", f"(got: {hit})")
+    print()
+
+
+def run_non2xx_test():
+    """Test 5: non-2xx upstream response is not cached."""
+    print("=" * 60)
+    print("Test 5: Non-2xx upstream not cached")
+
+    err_payload = {
+        "model": "mock-model",
+        "messages": [{"role": "user", "content": "Error test"}],
+        "temperature": 0,
+        "stream": False,
+    }
+
+    # First: mock returns 500
+    set_override(500, [("Content-Type", "application/json")], b'{"error":"server error"}')
+    hit, status, body = send_request(err_payload)
+    check("miss on 500", hit != "hit", f"(got: {hit})")
+    check("status is 500", status == 500, f"(status: {status})")
+    check("body has error", '"server error"' in body, f"(body: {body[:50]})")
+
+    # Second: same request, no override -> mock returns 200 (nothing was cached)
+    hit, status, body = send_request(err_payload)
+    check("miss on retry (500 was not cached)", hit != "hit", f"(got: {hit})")
+    check("status is 200 now", status == 200, f"(status: {status})")
+    check("body is mock response", "Mock upstream response" in body)
+
+    # Third: now it's cached from the 200
+    hit, status, _ = send_request(err_payload)
+    check("hit on third request", hit == "hit", f"(got: {hit})")
+    print()
+
+
+def run_streaming_test():
+    """Test 6: streaming passthrough preserves status + caching."""
+    print("=" * 60)
+    print("Test 6: Streaming cache hit/miss")
+
+    # SSE-formatted mock response
+    sse_chunk = json.dumps({
+        "id": "mock-cmpl-sse",
+        "object": "chat.completion.chunk",
+        "created": 1700000000,
+        "model": "mock-model",
+        "choices": [{"index": 0, "delta": {"content": "Mock"}, "finish_reason": None}],
+    })
+    sse_body = f"data: {sse_chunk}\n\ndata: [DONE]\n\n".encode()
+
+    stream_payload = {
+        "model": "mock-model",
+        "messages": [{"role": "user", "content": "Stream test"}],
+        "temperature": 0,
+        "stream": True,
+    }
+
+    # Set override to return SSE content
+    set_override(200, [("Content-Type", "text/event-stream")], sse_body)
+    hit, status, body = send_request(stream_payload)
+    check("streaming: miss on first request", hit != "hit", f"(got: {hit})")
+    check("streaming: status is 200", status == 200, f"(status: {status})")
+    check("streaming: body is SSE", "data:" in body, f"(body preview: {body[:40]})")
+
+    # Second identical streaming request -> cache hit
+    hit, status, body = send_request(stream_payload)
+    check("streaming: hit on second request", hit == "hit", f"(got: {hit})")
+    check("streaming: status preserved on hit", status == 200, f"(status: {status})")
+    check("streaming: body preserved on hit", "data:" in body, f"(body preview: {body[:40]})")
+    print()
+
+
+def run_tenant_test():
+    """Test 7: tenant header isolation."""
+    print("=" * 60)
+    print("Test 7: Tenant header separation")
+
+    tenant_payload = {
+        "model": "mock-model",
+        "messages": [{"role": "user", "content": "Tenant test"}],
+        "temperature": 0,
+        "stream": False,
+    }
+
+    t1_headers = {"X-Tenant-Id": "tenant-alpha"}
+    t2_headers = {"X-Tenant-Id": "tenant-beta"}
+
+    # First request with tenant-alpha -> miss
+    hit, status, _ = send_request(tenant_payload, extra_headers=t1_headers)
+    check("tenant: alpha first request miss", hit != "hit", f"(got: {hit})")
+    check("tenant: alpha status 200", status == 200, f"(status: {status})")
+
+    # Second request with tenant-alpha -> hit (same tenant)
+    hit, status, _ = send_request(tenant_payload, extra_headers=t1_headers)
+    check("tenant: alpha second request hit", hit == "hit", f"(got: {hit})")
+
+    # First request with tenant-beta -> miss (different tenant)
+    hit, status, _ = send_request(tenant_payload, extra_headers=t2_headers)
+    check("tenant: beta first request miss (isolated)", hit != "hit", f"(got: {hit})")
+
+    # Second request with tenant-beta -> hit
+    hit, status, _ = send_request(tenant_payload, extra_headers=t2_headers)
+    check("tenant: beta second request hit", hit == "hit", f"(got: {hit})")
+    print()
+
+
+def reset_mock_count():
     global mock_request_count
+    with mock_request_lock:
+        mock_request_count = 0
+
+
+def main():
+    global PASS, FAIL, mock_request_count
 
     print("Starting mock upstream server...")
     mock_server = start_mock()
@@ -158,48 +338,21 @@ def main():
             sys.exit(1)
         print("  Proxy is online.\n")
 
-        payload = {
-            "model": "mock-model",
-            "messages": [{"role": "user", "content": "Hello"}],
-            "temperature": 0,
-            "stream": False,
-        }
+        run_basic_tests()
+        run_non2xx_test()
+        run_streaming_test()
 
-        # === Test 1: First request should be a cache miss ===
-        print("=" * 60)
-        print("Test 1: First request — cache miss")
-        hit, status, _ = send_request(payload)
-        check("x-stack-intercept is not hit", hit != "hit", f"(got: {hit})")
-        check("status is 200", status == 200, f"(status: {status})")
-        print()
+        # Restart proxy with tenant header config for isolation test
+        proxy.terminate()
+        proxy.wait(timeout=5)
+        reset_mock_count()
 
-        # === Test 2: Second identical request should be a cache hit ===
-        print("=" * 60)
-        print("Test 2: Second request — exact cache hit")
-        hit, status, _ = send_request(payload)
-        check("x-stack-intercept is hit", hit == "hit", f"(got: {hit})")
-        check("status is 200", status == 200, f"(status: {status})")
-        print()
+        proxy = start_proxy({"STACK_INTERCEPT_TENANT_ID_HEADER": "X-Tenant-Id"})
+        if not wait_for(PROXY_URL):
+            print("FAILED: Proxy (tenant config) did not start")
+            sys.exit(1)
 
-        # === Test 3: Mock should have received exactly 1 request ===
-        print("=" * 60)
-        print("Test 3: Mock upstream call count")
-        with mock_request_lock:
-            check("only 1 upstream call", mock_request_count == 1, f"(count: {mock_request_count})")
-        print()
-
-        # === Test 4: Different prompt should miss ===
-        print("=" * 60)
-        print("Test 4: Different prompt — cache miss")
-        payload2 = {
-            "model": "mock-model",
-            "messages": [{"role": "user", "content": "Different query"}],
-            "temperature": 0,
-            "stream": False,
-        }
-        hit, status, _ = send_request(payload2)
-        check("x-stack-intercept is not hit", hit != "hit", f"(got: {hit})")
-        print()
+        run_tenant_test()
 
         # === Summary ===
         print("=" * 60)
