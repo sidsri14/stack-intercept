@@ -1,8 +1,8 @@
-use candle_core::{Device, Tensor, DType};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
-use tokenizers::Tokenizer;
 use std::path::PathBuf;
+use tokenizers::Tokenizer;
 
 pub struct LocalPredictor {
     model: BertModel,
@@ -17,7 +17,8 @@ impl LocalPredictor {
         let model_dir = std::env::var("STACK_INTERCEPT_MODEL_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
-                let exe = std::env::current_exe().ok()
+                let exe = std::env::current_exe()
+                    .ok()
                     .and_then(|p| p.parent().map(|p| p.to_path_buf()))
                     .unwrap_or_else(|| PathBuf::from("."));
                 let mut path = exe.clone();
@@ -42,17 +43,22 @@ impl LocalPredictor {
         let tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Tokenizer read issue: {}", e))?;
 
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)?
-        };
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };
 
         let model = BertModel::load(vb, &config)?;
 
-        Ok(Self { model, tokenizer, device })
+        Ok(Self {
+            model,
+            tokenizer,
+            device,
+        })
     }
 
     pub fn encode_text(&self, raw_prompt: &str) -> anyhow::Result<Vec<f32>> {
-        let tokens = self.tokenizer.encode(raw_prompt, true)
+        let tokens = self
+            .tokenizer
+            .encode(raw_prompt, true)
             .map_err(|e| anyhow::anyhow!("Tokenization fail: {}", e))?;
 
         let ids = tokens.get_ids();

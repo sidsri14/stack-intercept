@@ -21,7 +21,8 @@ impl RouteDecision {
             format!(
                 "{}|fallback|{}|{}",
                 ROUTING_POLICY_VERSION,
-                self.final_url.trim_start_matches("https://")
+                self.final_url
+                    .trim_start_matches("https://")
                     .trim_start_matches("http://")
                     .trim_end_matches("/v1/chat/completions"),
                 self.final_model,
@@ -30,7 +31,8 @@ impl RouteDecision {
             format!(
                 "{}|passthrough|{}|{}",
                 ROUTING_POLICY_VERSION,
-                upstream_url.trim_start_matches("https://")
+                upstream_url
+                    .trim_start_matches("https://")
                     .trim_start_matches("http://"),
                 requested_model,
             )

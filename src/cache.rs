@@ -1,7 +1,7 @@
 use serde_json::Value;
-use sha2::{Sha256, Digest};
-use std::time::{Duration, Instant};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub struct CachedEntry {
@@ -59,8 +59,15 @@ fn extract_hostname(upstream_base_url: &str) -> String {
 /// Returns None if the request is not cache-eligible.
 /// `routing_namespace` distinguishes routed vs passthrough responses (preventing
 /// cross-contamination between different routing decisions for the same payload).
-pub fn cache_key_hash(payload: &Value, tenant_id: Option<String>, upstream_base_url: &str, routing_namespace: Option<&str>) -> Option<String> {
-    if !is_eligible(payload) { return None; }
+pub fn cache_key_hash(
+    payload: &Value,
+    tenant_id: Option<String>,
+    upstream_base_url: &str,
+    routing_namespace: Option<&str>,
+) -> Option<String> {
+    if !is_eligible(payload) {
+        return None;
+    }
 
     let mut hasher = Sha256::new();
 
@@ -68,10 +75,14 @@ pub fn cache_key_hash(payload: &Value, tenant_id: Option<String>, upstream_base_
     hasher.update(extract_hostname(upstream_base_url).as_bytes());
 
     // Tenant
-    if let Some(t) = tenant_id { hasher.update(t.as_bytes()); }
+    if let Some(t) = tenant_id {
+        hasher.update(t.as_bytes());
+    }
 
     // Routing namespace — prevents cache cross-contamination
-    if let Some(ns) = routing_namespace { hasher.update(ns.as_bytes()); }
+    if let Some(ns) = routing_namespace {
+        hasher.update(ns.as_bytes());
+    }
 
     // Canonical full payload JSON (recursively sorted keys for determinism)
     hasher.update(canonical_json(payload).as_bytes());
@@ -82,13 +93,19 @@ pub fn cache_key_hash(payload: &Value, tenant_id: Option<String>, upstream_base_
 /// Check whether a request is eligible for caching at all.
 pub fn is_eligible(payload: &Value) -> bool {
     let has_no_store = payload["cache_control"].as_str() == Some("no_store");
-    if has_no_store { return false; }
+    if has_no_store {
+        return false;
+    }
 
     let temp = payload["temperature"].as_f64();
-    if temp.is_some_and(|t| t != 0.0) { return false; }
+    if temp.is_some_and(|t| t != 0.0) {
+        return false;
+    }
 
     if let Some(tools) = payload["tools"].as_array() {
-        if !tools.is_empty() { return false; }
+        if !tools.is_empty() {
+            return false;
+        }
     }
 
     true
@@ -115,7 +132,9 @@ impl ExactCache {
     pub fn insert(&mut self, key: String, body: Vec<u8>) {
         // Evict if at capacity
         if self.entries.len() >= self.max_entries {
-            let expired_key = self.entries.iter()
+            let expired_key = self
+                .entries
+                .iter()
                 .find(|(_, e)| e.created_at.elapsed() >= e.ttl)
                 .map(|(k, _)| k.clone());
 
@@ -123,7 +142,9 @@ impl ExactCache {
                 self.entries.remove(&k);
             } else {
                 // Evict the entry with the oldest created_at (FIFO eviction)
-                let oldest = self.entries.iter()
+                let oldest = self
+                    .entries
+                    .iter()
                     .min_by(|(_, a), (_, b)| a.created_at.cmp(&b.created_at))
                     .map(|(k, _)| k.clone());
                 if let Some(k) = oldest {
@@ -131,10 +152,13 @@ impl ExactCache {
                 }
             }
         }
-        self.entries.insert(key, CachedEntry {
-            response_body: body,
-            created_at: Instant::now(),
-            ttl: self.default_ttl,
-        });
+        self.entries.insert(
+            key,
+            CachedEntry {
+                response_body: body,
+                created_at: Instant::now(),
+                ttl: self.default_ttl,
+            },
+        );
     }
 }

@@ -1,28 +1,27 @@
-pub mod embeddings;
 pub mod cache;
 pub mod config;
+pub mod embeddings;
 pub mod router;
 
-use axum::{
-    routing::post,
-    Router,
-    response::IntoResponse,
-    body::{Body, Bytes},
-    extract::{DefaultBodyLimit, State},
-    http::{StatusCode, HeaderMap, Response},
-    http::response::Builder as ResponseBuilder,
-    Json,
-};
-use futures_util::StreamExt;
-use futures_util::stream;
-use reqwest::Client;
-use std::net::SocketAddr;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use crate::cache::{ExactCache, cache_key_hash, canonical_json, is_eligible};
+use crate::cache::{cache_key_hash, canonical_json, is_eligible, ExactCache};
 use crate::config::ProxyConfig;
 use crate::embeddings::LocalPredictor;
 use crate::router::evaluate_routing;
+use axum::{
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, State},
+    http::response::Builder as ResponseBuilder,
+    http::{HeaderMap, Response, StatusCode},
+    response::IntoResponse,
+    routing::post,
+    Json, Router,
+};
+use futures_util::stream;
+use futures_util::StreamExt;
+use reqwest::Client;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
 
 const ALIGNMENT_BAR: f32 = 0.93;
 
@@ -43,7 +42,7 @@ fn build_context_key(
     upstream_base_url: &str,
     is_routed: bool,
 ) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
 
     // Hash all messages EXCEPT the final user prompt
@@ -53,27 +52,42 @@ fn build_context_key(
         } else {
             vec![]
         };
-        hasher.update(canonical_json(&serde_json::Value::Array(
-            context_messages.into_iter().cloned().collect(),
-        )).as_bytes());
+        hasher.update(
+            canonical_json(&serde_json::Value::Array(
+                context_messages.into_iter().cloned().collect(),
+            ))
+            .as_bytes(),
+        );
     }
 
     let model = payload["model"].as_str().unwrap_or("unknown");
     hasher.update(model.as_bytes());
     hasher.update(upstream_base_url.as_bytes());
 
-    if let Some(t) = tenant_id { hasher.update(t.as_bytes()); }
+    if let Some(t) = tenant_id {
+        hasher.update(t.as_bytes());
+    }
     // Include routing status so routed/unrouted contexts don't share semantic buckets
-    if is_routed { hasher.update(b"routed"); }
+    if is_routed {
+        hasher.update(b"routed");
+    }
     if let Some(tools) = payload["tools"].as_array() {
-        if !tools.is_empty() { hasher.update(canonical_json(&serde_json::Value::Array(tools.clone())).as_bytes()); }
+        if !tools.is_empty() {
+            hasher.update(canonical_json(&serde_json::Value::Array(tools.clone())).as_bytes());
+        }
     }
     if payload["response_format"].is_object() {
         hasher.update(canonical_json(&payload["response_format"]).as_bytes());
     }
-    if !payload["tool_choice"].is_null() { hasher.update(payload["tool_choice"].to_string().as_bytes()); }
-    if let Some(temp) = payload["temperature"].as_f64() { hasher.update(&temp.to_le_bytes()); }
-    if let Some(tp) = payload["top_p"].as_f64() { hasher.update(&tp.to_le_bytes()); }
+    if !payload["tool_choice"].is_null() {
+        hasher.update(payload["tool_choice"].to_string().as_bytes());
+    }
+    if let Some(temp) = payload["temperature"].as_f64() {
+        hasher.update(temp.to_le_bytes());
+    }
+    if let Some(tp) = payload["top_p"].as_f64() {
+        hasher.update(tp.to_le_bytes());
+    }
 
     format!("{:x}", hasher.finalize())
 }
@@ -95,7 +109,9 @@ async fn main() {
 
     let predictor = if config.cache_mode == config::CacheMode::Semantic {
         println!("Initializing BGE Local Embedding Weights...");
-        Some(Arc::new(LocalPredictor::init_from_disk().expect("Failed to bind local model weights")))
+        Some(Arc::new(
+            LocalPredictor::init_from_disk().expect("Failed to bind local model weights"),
+        ))
     } else {
         println!("Skipping model load (not in semantic mode).");
         None
@@ -121,8 +137,11 @@ async fn main() {
 }
 
 fn as_bearer(key: &str) -> String {
-    if key.starts_with("Bearer ") { key.to_string() }
-    else { format!("Bearer {}", key) }
+    if key.starts_with("Bearer ") {
+        key.to_string()
+    } else {
+        format!("Bearer {}", key)
+    }
 }
 
 fn compute_vector_dot(v1: &[f32], v2: &[f32]) -> f32 {
@@ -147,7 +166,10 @@ async fn handle_intercept(
     headers: HeaderMap,
     Json(payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let orig_auth = headers.get("authorization").and_then(|h| h.to_str().ok()).unwrap_or("");
+    let orig_auth = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
 
     let prompt = payload["messages"]
         .as_array()
@@ -162,13 +184,17 @@ async fn handle_intercept(
     // Capture the originally requested model BEFORE routing may rewrite it
     let requested_model = payload["model"].as_str().unwrap_or("unknown").to_string();
 
-    let tenant_id = state.config.tenant_id_header.as_ref()
+    let tenant_id = state
+        .config
+        .tenant_id_header
+        .as_ref()
         .and_then(|h| headers.get(h))
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
     // Check x-stack-intercept-no-route header (allows per-request opt-out)
-    let no_route = headers.get("x-stack-intercept-no-route")
+    let no_route = headers
+        .get("x-stack-intercept-no-route")
         .and_then(|v| v.to_str().ok())
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
@@ -197,19 +223,31 @@ async fn handle_intercept(
         };
     }
 
-    let route_label = if route.needs_fallback_key { "fallback" } else { "passthrough" };
+    let route_label = if route.needs_fallback_key {
+        "fallback"
+    } else {
+        "passthrough"
+    };
     let routed_model = &route.final_model;
 
     // Build routing namespace for cache key isolation (always present —
     // passthrough and fallback each get a unique, versioned namespace so
     // future routing policy changes don't accidentally share cache keys).
-    let routing_namespace = route.cache_namespace(
-        &state.config.upstream_base_url,
-        &requested_model,
-    );
+    let routing_namespace =
+        route.cache_namespace(&state.config.upstream_base_url, &requested_model);
 
-    let cache_key_hash = cache_key_hash(&payload, tenant_id.clone(), &state.config.upstream_base_url, Some(&routing_namespace));
-    let context_key = build_context_key(&payload, &tenant_id, &state.config.upstream_base_url, route.needs_fallback_key);
+    let cache_key_hash = cache_key_hash(
+        &payload,
+        tenant_id.clone(),
+        &state.config.upstream_base_url,
+        Some(&routing_namespace),
+    );
+    let context_key = build_context_key(
+        &payload,
+        &tenant_id,
+        &state.config.upstream_base_url,
+        route.needs_fallback_key,
+    );
 
     // 1. Exact cache lookup (O(1) via HashMap)
     if state.config.is_cache_enabled() && !has_no_store {
@@ -224,23 +262,27 @@ async fn handle_intercept(
                     });
                     return with_route_headers(
                         Response::builder(),
-                        route_label, &requested_model, routed_model,
+                        route_label,
+                        &requested_model,
+                        routed_model,
                     )
-                        .header("content-type", "text/event-stream")
-                        .header("x-stack-intercept", "hit")
-                        .body(Body::from_stream(stream))
-                        .unwrap()
-                        .into_response();
+                    .header("content-type", "text/event-stream")
+                    .header("x-stack-intercept", "hit")
+                    .body(Body::from_stream(stream))
+                    .unwrap()
+                    .into_response();
                 } else {
                     return with_route_headers(
                         Response::builder(),
-                        route_label, &requested_model, routed_model,
+                        route_label,
+                        &requested_model,
+                        routed_model,
                     )
-                        .header("content-type", "application/json")
-                        .header("x-stack-intercept", "hit")
-                        .body(Body::from(cached))
-                        .unwrap()
-                        .into_response();
+                    .header("content-type", "application/json")
+                    .header("x-stack-intercept", "hit")
+                    .body(Body::from(cached))
+                    .unwrap()
+                    .into_response();
                 }
             }
         }
@@ -248,24 +290,32 @@ async fn handle_intercept(
 
     let is_cache_eligible = is_eligible(&payload);
 
-    let semantic_eligible =
-        state.config.is_semantic_allowed()
+    let semantic_eligible = state.config.is_semantic_allowed()
         && !has_no_store
         && is_cache_eligible
         && payload["response_format"].is_null()
         && payload["tool_choice"].is_null()
-        && payload["tools"].as_array().map_or(true, |a| a.is_empty());
+        && payload["tools"].as_array().is_none_or(|a| a.is_empty());
 
     // 2. Offload neural computations to blocking thread (spawn_blocking)
     let target_coordinates: Option<Vec<f32>> = if semantic_eligible {
         let predictor = match state.predictor.as_ref() {
             Some(p) => Arc::clone(p),
-            None => return (StatusCode::INTERNAL_SERVER_ERROR, "Predictor not initialized").into_response(),
+            None => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Predictor not initialized",
+                )
+                    .into_response()
+            }
         };
         let prompt_clone = prompt.clone();
         match tokio::task::spawn_blocking(move || predictor.encode_text(&prompt_clone)).await {
             Ok(Ok(v)) => Some(v),
-            _ => return (StatusCode::INTERNAL_SERVER_ERROR, "Vector mapping failure").into_response(),
+            _ => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Vector mapping failure")
+                    .into_response()
+            }
         }
     } else {
         None
@@ -287,23 +337,27 @@ async fn handle_intercept(
                             });
                             return with_route_headers(
                                 Response::builder(),
-                                route_label, &requested_model, routed_model,
+                                route_label,
+                                &requested_model,
+                                routed_model,
                             )
-                                .header("content-type", "text/event-stream")
-                                .header("x-stack-intercept", "hit")
-                                .body(Body::from_stream(stream))
-                                .unwrap()
-                                .into_response();
+                            .header("content-type", "text/event-stream")
+                            .header("x-stack-intercept", "hit")
+                            .body(Body::from_stream(stream))
+                            .unwrap()
+                            .into_response();
                         } else {
                             return with_route_headers(
                                 Response::builder(),
-                                route_label, &requested_model, routed_model,
+                                route_label,
+                                &requested_model,
+                                routed_model,
                             )
-                                .header("content-type", "application/json")
-                                .header("x-stack-intercept", "hit")
-                                .body(Body::from(cached))
-                                .unwrap()
-                                .into_response();
+                            .header("content-type", "application/json")
+                            .header("x-stack-intercept", "hit")
+                            .body(Body::from(cached))
+                            .unwrap()
+                            .into_response();
                         }
                     }
                 }
@@ -323,15 +377,19 @@ async fn handle_intercept(
     // Pick the right auth key for the destination
     let final_auth = if route.needs_fallback_key {
         as_bearer(
-            state.config.fallback_api_key
+            state
+                .config
+                .fallback_api_key
                 .as_ref()
-                .expect("fallback route requires fallback_api_key")
+                .expect("fallback route requires fallback_api_key"),
         )
     } else {
         orig_auth.to_string()
     };
 
-    let upstream_res = state.client.post(&route.final_url)
+    let upstream_res = state
+        .client
+        .post(&route.final_url)
         .header("authorization", final_auth)
         .json(&modified_payload)
         .send()
@@ -339,7 +397,8 @@ async fn handle_intercept(
 
     match upstream_res {
         Ok(res) => {
-            let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let status = StatusCode::from_u16(res.status().as_u16())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             let is_success = status.is_success();
 
             if is_streaming {
@@ -354,17 +413,17 @@ async fn handle_intercept(
 
                 // Forward chunks transparently — no model-name masking.
                 // Route headers inform the client of the actual provider.
-                let stream = res.bytes_stream().map(move |chunk_result| {
-                    match chunk_result {
+                let stream = res
+                    .bytes_stream()
+                    .map(move |chunk_result| match chunk_result {
                         Ok(bytes) => {
                             if let Ok(mut buf) = raw_byte_accumulator.lock() {
                                 buf.extend_from_slice(&bytes);
                             }
                             Ok(bytes)
-                        },
-                        Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
-                    }
-                });
+                        }
+                        Err(e) => Err(std::io::Error::other(e)),
+                    });
 
                 // When stream ends, flush accumulated bytes to cache
                 let stream = stream.chain(stream::once(async move {
@@ -372,14 +431,19 @@ async fn handle_intercept(
                     if !final_bytes.is_empty() && is_success {
                         if is_cache_eligible {
                             if let Some(ref key_hash) = cache_key_hash_clone {
-                                state_clone.exact_cache.write().unwrap().insert(key_hash.clone(), final_bytes.clone());
+                                state_clone
+                                    .exact_cache
+                                    .write()
+                                    .unwrap()
+                                    .insert(key_hash.clone(), final_bytes.clone());
                                 println!("Stream cached (exact).");
                             }
                         }
                         if semantic_eligible {
                             if let Some(ref vector) = vector_clone {
                                 let mut writer = state_clone.index.write().unwrap();
-                                writer.entry(context_key_clone)
+                                writer
+                                    .entry(context_key_clone)
                                     .or_default()
                                     .push(CacheItem {
                                         prompt: prompt_clone.clone(),
@@ -395,15 +459,17 @@ async fn handle_intercept(
 
                 return with_route_headers(
                     Response::builder(),
-                    route_label, &requested_model, routed_model,
+                    route_label,
+                    &requested_model,
+                    routed_model,
                 )
-                    .status(status)
-                    .header("content-type", "text/event-stream")
-                    .header("cache-control", "no-store")
-                    .header("x-stack-intercept", "miss")
-                    .body(Body::from_stream(stream))
-                    .unwrap()
-                    .into_response();
+                .status(status)
+                .header("content-type", "text/event-stream")
+                .header("cache-control", "no-store")
+                .header("x-stack-intercept", "miss")
+                .body(Body::from_stream(stream))
+                .unwrap()
+                .into_response();
             }
 
             // Non-streaming path
@@ -413,12 +479,19 @@ async fn handle_intercept(
             if is_success {
                 if is_cache_eligible {
                     if let Some(ref key_hash) = cache_key_hash {
-                        state.exact_cache.write().unwrap().insert(key_hash.clone(), bytes.to_vec());
+                        state
+                            .exact_cache
+                            .write()
+                            .unwrap()
+                            .insert(key_hash.clone(), bytes.to_vec());
                     }
                 }
                 if semantic_eligible {
                     if let Some(ref target_vec) = target_coordinates {
-                        state.index.write().unwrap()
+                        state
+                            .index
+                            .write()
+                            .unwrap()
                             .entry(context_key.clone())
                             .or_default()
                             .push(CacheItem {
@@ -432,22 +505,26 @@ async fn handle_intercept(
 
             with_route_headers(
                 Response::builder(),
-                route_label, &requested_model, routed_model,
+                route_label,
+                &requested_model,
+                routed_model,
             )
-                .status(status)
-                .header("x-stack-intercept", "miss")
-                .body(Body::from(res_str))
-                .unwrap()
-                .into_response()
+            .status(status)
+            .header("x-stack-intercept", "miss")
+            .body(Body::from(res_str))
+            .unwrap()
+            .into_response()
         }
         Err(_) => with_route_headers(
-                Response::builder(),
-                route_label, &requested_model, routed_model,
-            )
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header("x-stack-intercept", "error")
-                .body(Body::from("Upstream Timeout"))
-                .unwrap()
-                .into_response(),
+            Response::builder(),
+            route_label,
+            &requested_model,
+            routed_model,
+        )
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .header("x-stack-intercept", "error")
+        .body(Body::from("Upstream Timeout"))
+        .unwrap()
+        .into_response(),
     }
 }
