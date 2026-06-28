@@ -185,14 +185,15 @@ async fn handle_intercept(
     let route_label = if route.needs_fallback_key { "fallback" } else { "passthrough" };
     let routed_model = &route.final_model;
 
-    // Build routing namespace for cache key isolation
-    let routing_namespace = if route.needs_fallback_key {
-        Some(format!("route:{}:{}", route.final_url, route.final_model))
-    } else {
-        None
-    };
+    // Build routing namespace for cache key isolation (always present —
+    // passthrough and fallback each get a unique, versioned namespace so
+    // future routing policy changes don't accidentally share cache keys).
+    let routing_namespace = route.cache_namespace(
+        &state.config.upstream_base_url,
+        &requested_model,
+    );
 
-    let cache_key_hash = cache_key_hash(&payload, tenant_id.clone(), &state.config.upstream_base_url, routing_namespace.as_deref());
+    let cache_key_hash = cache_key_hash(&payload, tenant_id.clone(), &state.config.upstream_base_url, Some(&routing_namespace));
     let context_key = build_context_key(&payload, &tenant_id, &state.config.upstream_base_url, route.needs_fallback_key);
 
     // 1. Exact cache lookup (O(1) via HashMap)
@@ -423,6 +424,14 @@ async fn handle_intercept(
                 .unwrap()
                 .into_response()
         }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Upstream Timeout").into_response(),
+        Err(_) => with_route_headers(
+                Response::builder(),
+                route_label, &requested_model, routed_model,
+            )
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header("x-stack-intercept", "error")
+                .body(Body::from("Upstream Timeout"))
+                .unwrap()
+                .into_response(),
     }
 }

@@ -364,6 +364,73 @@ def main():
         print()
 
         # =========================================================
+        # Test 8: Explicit model requirement in system prompt -> NOT routed
+        # =========================================================
+        print("=" * 60)
+        print("Test 8: 'do not switch models' in system prompt -> NOT routed")
+
+        # Restart proxy with routing for remaining tests
+        proxy.terminate()
+        proxy.wait(timeout=5)
+        upstream_mock.reset()
+        fallback_mock.reset()
+        proxy = start_proxy("true")
+        if not wait_for(PROXY_URL):
+            print("FAILED: Proxy did not start")
+            sys.exit(1)
+
+        explicit_payload = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant. Do not switch models."},
+                {"role": "user", "content": "What is the capital of France?"},
+            ],
+            "temperature": 0,
+            "stream": False,
+        }
+        hit, route, orig_model, routed_model, status, body = send_request(explicit_payload)
+        check("status is 200", status == 200)
+        check("route is passthrough", route == "passthrough")
+        check("body from upstream", "Upstream response" in body)
+        check("upstream received request", upstream_mock.request_count == 1)
+        check("fallback received 0 requests", fallback_mock.request_count == 0)
+        print()
+
+        # =========================================================
+        # Test 9: 'race condition' keyword -> NOT routed
+        # =========================================================
+        print("=" * 60)
+        print("Test 9: 'race condition' prompt -> NOT routed (expanded keyword)")
+        race_payload = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Debug a race condition in this Go program"}],
+            "temperature": 0,
+            "stream": False,
+        }
+        hit, route, orig_model, routed_model, status, body = send_request(race_payload)
+        check("status is 200", status == 200)
+        check("route is passthrough", route == "passthrough")
+        check("body from upstream", "Upstream response" in body)
+        print()
+
+        # =========================================================
+        # Test 10: 'security review' keyword -> NOT routed
+        # =========================================================
+        print("=" * 60)
+        print("Test 10: 'security review' prompt -> NOT routed (expanded keyword)")
+        sec_payload = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Perform a security review of this authentication system"}],
+            "temperature": 0,
+            "stream": False,
+        }
+        hit, route, orig_model, routed_model, status, body = send_request(sec_payload)
+        check("status is 200", status == 200)
+        check("route is passthrough", route == "passthrough")
+        check("body from upstream", "Upstream response" in body)
+        print()
+
+        # =========================================================
         # Summary
         # =========================================================
         print("=" * 60)
