@@ -13,8 +13,8 @@ Never chase "semantic 0ms" before passthrough correctness. Exact cache is defaul
 ### Source
 - `src/main.rs` — Axum HTTP server, `/v1/chat/completions` handler, AppState, streaming passthrough, cache orchestration
 - `src/embeddings.rs` — `LocalPredictor` struct: `init_from_disk()`, `encode_text(&str) -> Vec<f32>`. BGE-small-en-v1.5 model, 384-dim, mean pooling + L2 normalization
-- `src/cache.rs` — `CacheKey` (SHA256 of all request dimensions), `ExactCache` (bounded TTL-based), `CachedEntry`, `is_eligible()` checks
-- `src/config.rs` — `ProxyConfig::from_env()` reads `STACK_INTERCEPT_CACHE_MODE`, `STACK_INTERCEPT_TENANT_ID_HEADER`, `STACK_INTERCEPT_ALLOW_MODEL_REWRITE`
+- `src/cache.rs` — `cache_key_hash()` (SHA256 of canonical full payload + provider + tenant), `is_eligible()` checks, `ExactCache` (bounded TTL-based with `Vec<u8>` body), `CachedEntry`
+- `src/config.rs` — `ProxyConfig::from_env()` reads `STACK_INTERCEPT_CACHE_MODE`, `STACK_INTERCEPT_TENANT_ID_HEADER`
 
 ### Scripts & Config
 - `build.cmd` — MSVC build env wrapper (VS Build Tools 2022, 14.44.35207). Run `./build.cmd build` (use Git Bash, not `.\build.cmd`)
@@ -34,11 +34,11 @@ Never chase "semantic 0ms" before passthrough correctness. Exact cache is defaul
 Upstream provider SSE bytes are forwarded as-is via `axum::body::Body::from_stream`. Do NOT use `axum::Sse<Event>` — that wraps bytes in additional `data:` framing, corrupting streaming semantics.
 
 ### Two-layer cache
-1. **Exact cache** (default): SHA256(provider, model, full_messages, tools, response_format, temperature, top_p, max_tokens, tenant_id, stream). Only caches when temperature=0, no tools, no `cache_control: no_store`.
-2. **Semantic cache** (opt-in via `semantic` mode): BGE embedding + cosine dot product at `ALIGNMENT_BAR=0.93`. Gated by exact context first (tenant, model family, system prompt).
+1. **Exact cache** (default): SHA256(provider, tenant, canonical_full_payload). Only caches when temperature=0, no tools, no `cache_control: no_store`.
+2. **Semantic cache** (opt-in via `semantic` mode): BGE embedding + cosine dot product at `ALIGNMENT_BAR=0.93`. Gated by context key (everything except the last user message) first, then embedding similarity within that bucket.
 
 ### Semantic safety
-Semantic search is never done on the last-user-message alone. It requires matching exact context key first, then embedding similarity within that bucket. This prevents unsafe cache hits across different tenants, system prompts, or models.
+Semantic search is never done on the last-user-message alone. It requires matching exact context key (everything except the last message) first, then embedding similarity within that bucket. This prevents unsafe cache hits across different tenants, system prompts, or models.
 
 ### HNSW not needed in prototype
 0–10k entries: `Vec<CacheItem>` + linear cosine scan. fast-hnsw is in Cargo.toml but unused — stays as placeholder for >10k entries.
@@ -73,7 +73,6 @@ python test_semantic_safety.py
 | `STACK_INTERCEPT_MODEL_DIR` | `./model` | Path to BGE model files |
 | `STACK_INTERCEPT_CACHE_MODE` | `exact` | `off`, `exact`, or `semantic` |
 | `STACK_INTERCEPT_TENANT_ID_HEADER` | (none) | Header name for tenant isolation |
-| `STACK_INTERCEPT_ALLOW_MODEL_REWRITE` | `false` | Allow proxy to substitute models |
 
 ## Candle-specific Notes
 - `Device::Cpu` with SIMD — no AVX-512 guarantee. CUDA feature exists but untested.

@@ -17,7 +17,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
-use crate::cache::{CacheKey, ExactCache};
+use crate::cache::{ExactCache, cache_key_hash, is_eligible};
 use crate::config::ProxyConfig;
 use crate::embeddings::LocalPredictor;
 
@@ -32,7 +32,8 @@ struct CacheItem {
 }
 
 /// Build a deterministic context key for semantic safety gating.
-/// Covers all request dimensions that must match before a semantic cache hit is allowed.
+/// Hashes everything EXCEPT the final user message, so semantically similar
+/// prompts within the same conversation context can produce cache hits.
 fn build_context_key(
     payload: &serde_json::Value,
     tenant_id: &Option<String>,
@@ -41,9 +42,14 @@ fn build_context_key(
     use sha2::{Sha256, Digest};
     let mut hasher = Sha256::new();
 
-    // Full messages JSON (covers system prompt, developer messages, multi-turn history)
+    // Hash all messages EXCEPT the final user prompt
     if let Some(messages) = payload["messages"].as_array() {
-        hasher.update(serde_json::to_string(messages).unwrap_or_default().as_bytes());
+        let context_messages: Vec<&serde_json::Value> = if messages.len() > 1 {
+            messages[..messages.len() - 1].iter().collect()
+        } else {
+            vec![] // single-turn: no context beyond the lone user message
+        };
+        hasher.update(serde_json::to_string(&context_messages).unwrap_or_default().as_bytes());
     }
 
     // Model
@@ -89,7 +95,7 @@ fn build_context_key(
 }
 
 struct AppState {
-    predictor: LocalPredictor,
+    predictor: Option<LocalPredictor>,
     index: RwLock<Vec<CacheItem>>,
     exact_cache: RwLock<ExactCache>,
     config: ProxyConfig,
@@ -103,8 +109,13 @@ async fn main() {
     let config = ProxyConfig::from_env();
     println!("Cache mode: {:?}", config.cache_mode);
 
-    println!("Initializing BGE Local Embedding Weights...");
-    let predictor = LocalPredictor::init_from_disk().expect("Failed to bind local model weights");
+    let predictor = if config.cache_mode == config::CacheMode::Semantic {
+        println!("Initializing BGE Local Embedding Weights...");
+        Some(LocalPredictor::init_from_disk().expect("Failed to bind local model weights"))
+    } else {
+        println!("Skipping model load (not in semantic mode).");
+        None
+    };
 
     let shared_state = Arc::new(AppState {
         predictor,
@@ -154,13 +165,10 @@ async fn handle_intercept(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    // Build cache key (used for both exact lookup and eligibility checks)
-    // Fix 5: pass upstream_base_url for provider field
-    let cache_key = CacheKey::from_payload(&payload, tenant_id.clone(), &state.config.upstream_base_url);
-    let cache_key_hash = cache_key.as_ref().map(|k| k.hash());
+    // Build cache key (used for exact cache lookup)
+    let cache_key_hash = cache_key_hash(&payload, tenant_id.clone(), &state.config.upstream_base_url);
 
     // Build context key for semantic safety gating
-    // Fix 2: expanded to cover all context dimensions
     let context_key = build_context_key(&payload, &tenant_id, &state.config.upstream_base_url);
 
     // Exact cache lookup (gated by config and no_store)
@@ -193,7 +201,7 @@ async fn handle_intercept(
         }
     }
 
-    let is_cache_eligible = CacheKey::is_eligible(&payload);
+    let is_cache_eligible = is_eligible(&payload);
 
     // Fix 1: strict semantic eligibility — gates both lookup and insertion
     // Combines semantic mode flag + no_store check + all cache-safety conditions
@@ -212,7 +220,11 @@ async fn handle_intercept(
 
     // Semantic cache lookup (only if strict eligibility passes)
     let target_coordinates: Option<Vec<f32>> = if semantic_eligible {
-        match state.predictor.encode_text(&prompt) {
+        let predictor = match state.predictor.as_ref() {
+            Some(p) => p,
+            None => return (StatusCode::INTERNAL_SERVER_ERROR, "Predictor not initialized").into_response(),
+        };
+        match predictor.encode_text(&prompt) {
             Ok(v) => Some(v),
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Vector mapping failure").into_response(),
         }
@@ -275,17 +287,14 @@ async fn handle_intercept(
                 let vector_clone = target_coordinates.clone();
                 let state_clone = Arc::clone(&state);
                 let cache_key_hash_clone = cache_key_hash.clone();
-                let buffered_body = Arc::new(std::sync::Mutex::new(String::new()));
+                let buffered_body = Arc::new(std::sync::Mutex::new(Vec::new()));
                 let buffered_body_clone = Arc::clone(&buffered_body);
 
                 let stream = res.bytes_stream().map(move |chunk_result| {
                     match chunk_result {
                         Ok(bytes) => {
-                            let raw_str = String::from_utf8_lossy(&bytes).to_string();
-                            {
-                                let mut buf = buffered_body.lock().unwrap();
-                                buf.push_str(&raw_str);
-                            }
+                            let mut buf = buffered_body.lock().unwrap();
+                            buf.extend_from_slice(&bytes);
                             Ok(bytes)
                         },
                         Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
@@ -293,7 +302,6 @@ async fn handle_intercept(
                 });
 
                 // When the stream ends, flush buffered content to cache
-                // Fix 4: only cache if status.is_success()
                 let stream = stream.chain(stream::once({
                     let state_chain = Arc::clone(&state_clone);
                     let prompt_chain = prompt_clone.clone();
@@ -302,6 +310,8 @@ async fn handle_intercept(
                     async move {
                         let final_content = buffered_body_clone.lock().unwrap().clone();
                         if !final_content.is_empty() && is_success {
+                            // Convert complete Vec<u8> to String once (safe: all chunks assembled)
+                            let final_body = String::from_utf8_lossy(&final_content).to_string();
                             if is_cache_eligible {
                                 if let Some(ref key_hash) = key_hash_chain {
                                     let mut cache = state_chain.exact_cache.write().unwrap();
@@ -315,7 +325,7 @@ async fn handle_intercept(
                                     writer.push(CacheItem {
                                         prompt: prompt_chain.clone(),
                                         vector: vector.clone(),
-                                        completion_response: final_content,
+                                        completion_response: final_body,
                                         context_key: context_key.clone(),
                                     });
                                     println!("Stream cached via semantic coordinates.");
@@ -346,7 +356,7 @@ async fn handle_intercept(
                 if is_cache_eligible {
                     if let Some(ref key_hash) = cache_key_hash {
                         let mut cache = state.exact_cache.write().unwrap();
-                        cache.insert(key_hash.clone(), res_str.clone());
+                        cache.insert(key_hash.clone(), res_str.clone().into_bytes());
                     }
                 }
 

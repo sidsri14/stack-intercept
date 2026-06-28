@@ -52,7 +52,6 @@ python test_semantic_hit.py
 | `STACK_INTERCEPT_MODEL_DIR` | `./model` | Path to BGE model files |
 | `STACK_INTERCEPT_CACHE_MODE` | `exact` | `off`, `exact`, or `semantic` |
 | `STACK_INTERCEPT_TENANT_ID_HEADER` | (none) | Header name for tenant isolation |
-| `STACK_INTERCEPT_ALLOW_MODEL_REWRITE` | `false` | Allow proxy to substitute models |
 
 Use `STACK_INTERCEPT_UPSTREAM_URL=https://api.openai.com` to switch back to OpenAI.
 
