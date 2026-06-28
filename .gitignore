@@ -1,2 +1,3 @@
 /target
 model/*.safetensors
+__pycache__/
