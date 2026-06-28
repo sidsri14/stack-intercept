@@ -1,14 +1,30 @@
 """
-StackIntercept semantic cache verification.
-Run 1: cache miss (cold). Run 2: cache hit via BGE embedding similarity >0.92.
+StackIntercept cache verification.
+Exact cache matches identical requests (same model, messages, temperature=0, etc.).
+Semantic cache (opt-in) matches semantically similar prompts within the same exact context.
+Set STACK_INTERCEPT_CACHE_MODE=semantic for semantic cache testing.
+
+Run 1: cache miss (cold). Run 2: cache hit via exact or semantic match.
 """
 
+import os
+import sys
+import io
 import openai
 import time
 
+# Handle Windows console encoding for Unicode
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+api_key = os.environ.get("OPENAI_API_KEY")
+if not api_key:
+    print("ERROR: Set OPENAI_API_KEY environment variable")
+    exit(1)
+
 client = openai.OpenAI(
     base_url="http://127.0.0.1:8080/v1",
-    api_key="your-actual-openai-api-key"
+    api_key=api_key
 )
 
 prompts = [
@@ -24,7 +40,7 @@ for i, prompt in enumerate(prompts):
 
     start = time.time()
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="deepseek-chat",
         messages=[{"role": "user", "content": prompt}],
         stream=True
     )
