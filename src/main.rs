@@ -7,9 +7,9 @@ use axum::{
     Router,
     response::IntoResponse,
     body::{Body, Bytes},
+    extract::{DefaultBodyLimit, State},
     http::{StatusCode, HeaderMap, Response},
     Json,
-    extract::State,
 };
 use futures_util::StreamExt;
 use futures_util::stream;
@@ -28,28 +28,63 @@ struct CacheItem {
     prompt: String,
     vector: Vec<f32>,
     completion_response: String,
-    context_key: String, // hash of system_prompt + model + tenant_id for safety gating
+    context_key: String, // hash of all context dimensions for safety gating
 }
 
 /// Build a deterministic context key for semantic safety gating.
-/// Includes system prompt, model, and tenant — all dimensions that must match
-/// before a semantic cache hit is allowed.
-fn build_context_key(payload: &serde_json::Value, tenant_id: &Option<String>) -> String {
+/// Covers all request dimensions that must match before a semantic cache hit is allowed.
+fn build_context_key(
+    payload: &serde_json::Value,
+    tenant_id: &Option<String>,
+    upstream_base_url: &str,
+) -> String {
     use sha2::{Sha256, Digest};
     let mut hasher = Sha256::new();
-    // System prompt
-    let system_prompt = payload["messages"].as_array()
-        .and_then(|msgs| msgs.iter().find(|m| m["role"] == "system"))
-        .and_then(|m| m["content"].as_str())
-        .unwrap_or("");
-    hasher.update(system_prompt.as_bytes());
+
+    // Full messages JSON (covers system prompt, developer messages, multi-turn history)
+    if let Some(messages) = payload["messages"].as_array() {
+        hasher.update(serde_json::to_string(messages).unwrap_or_default().as_bytes());
+    }
+
     // Model
     let model = payload["model"].as_str().unwrap_or("unknown");
     hasher.update(model.as_bytes());
+
+    // Provider / upstream URL
+    hasher.update(upstream_base_url.as_bytes());
+
     // Tenant
     if let Some(t) = tenant_id {
         hasher.update(t.as_bytes());
     }
+
+    // Tools schema
+    if let Some(tools) = payload["tools"].as_array() {
+        if !tools.is_empty() {
+            hasher.update(serde_json::to_string(tools).unwrap_or_default().as_bytes());
+        }
+    }
+
+    // Response format
+    if payload["response_format"].is_object() {
+        hasher.update(serde_json::to_string(&payload["response_format"]).unwrap_or_default().as_bytes());
+    }
+
+    // Tool choice
+    if !payload["tool_choice"].is_null() {
+        hasher.update(payload["tool_choice"].to_string().as_bytes());
+    }
+
+    // Temperature
+    if let Some(temp) = payload["temperature"].as_f64() {
+        hasher.update(&temp.to_le_bytes());
+    }
+
+    // Top_p
+    if let Some(tp) = payload["top_p"].as_f64() {
+        hasher.update(&tp.to_le_bytes());
+    }
+
     format!("{:x}", hasher.finalize())
 }
 
@@ -81,6 +116,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/v1/chat/completions", post(handle_intercept))
+        .layer(DefaultBodyLimit::max(shared_state.config.max_body_size))
         .with_state(shared_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
@@ -119,11 +155,13 @@ async fn handle_intercept(
         .map(|s| s.to_string());
 
     // Build cache key (used for both exact lookup and eligibility checks)
-    let cache_key = CacheKey::from_payload(&payload, tenant_id.clone());
+    // Fix 5: pass upstream_base_url for provider field
+    let cache_key = CacheKey::from_payload(&payload, tenant_id.clone(), &state.config.upstream_base_url);
     let cache_key_hash = cache_key.as_ref().map(|k| k.hash());
 
     // Build context key for semantic safety gating
-    let context_key = build_context_key(&payload, &tenant_id);
+    // Fix 2: expanded to cover all context dimensions
+    let context_key = build_context_key(&payload, &tenant_id, &state.config.upstream_base_url);
 
     // Exact cache lookup (gated by config and no_store)
     if state.config.is_cache_enabled() && !has_no_store {
@@ -157,9 +195,23 @@ async fn handle_intercept(
 
     let is_cache_eligible = CacheKey::is_eligible(&payload);
 
-    // Semantic cache (gated by config and no_store)
-    let should_do_semantic = state.config.is_semantic_allowed() && !has_no_store;
-    let target_coordinates: Option<Vec<f32>> = if should_do_semantic {
+    // Fix 1: strict semantic eligibility — gates both lookup and insertion
+    // Combines semantic mode flag + no_store check + all cache-safety conditions
+    // Semantic eligibility: stricter than exact — also blocks response_format,
+    // tool_choice, and non-empty tools (empty tools array is fine)
+    let semantic_eligible =
+        state.config.is_semantic_allowed()
+        && !has_no_store
+        && is_cache_eligible
+        && payload["response_format"].is_null()
+        && payload["tool_choice"].is_null()
+        && {
+            let tools_arr = payload["tools"].as_array();
+            tools_arr.map_or(true, |a| a.is_empty())
+        };
+
+    // Semantic cache lookup (only if strict eligibility passes)
+    let target_coordinates: Option<Vec<f32>> = if semantic_eligible {
         match state.predictor.encode_text(&prompt) {
             Ok(v) => Some(v),
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Vector mapping failure").into_response(),
@@ -169,11 +221,11 @@ async fn handle_intercept(
     };
 
     // Scan vector space for high-affinity matches (gated by exact context)
-    if should_do_semantic {
+    if semantic_eligible {
         if let Some(ref target_vec) = target_coordinates {
             let storage = state.index.read().unwrap();
             for item in storage.iter() {
-                // Safety gate: only match within same context (system prompt, model, tenant)
+                // Safety gate: only match within same context key
                 if item.context_key != context_key {
                     continue;
                 }
@@ -216,6 +268,7 @@ async fn handle_intercept(
     match upstream_res {
         Ok(res) => {
             let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let is_success = status.is_success();
 
             if is_streaming {
                 let prompt_clone = prompt.clone();
@@ -240,6 +293,7 @@ async fn handle_intercept(
                 });
 
                 // When the stream ends, flush buffered content to cache
+                // Fix 4: only cache if status.is_success()
                 let stream = stream.chain(stream::once({
                     let state_chain = Arc::clone(&state_clone);
                     let prompt_chain = prompt_clone.clone();
@@ -247,7 +301,7 @@ async fn handle_intercept(
                     let key_hash_chain = cache_key_hash_clone.clone();
                     async move {
                         let final_content = buffered_body_clone.lock().unwrap().clone();
-                        if !final_content.is_empty() {
+                        if !final_content.is_empty() && is_success {
                             if is_cache_eligible {
                                 if let Some(ref key_hash) = key_hash_chain {
                                     let mut cache = state_chain.exact_cache.write().unwrap();
@@ -255,7 +309,7 @@ async fn handle_intercept(
                                     println!("Stream cached (exact).");
                                 }
                             }
-                            if should_do_semantic {
+                            if semantic_eligible {
                                 if let Some(ref vector) = vector_chain {
                                     let mut writer = state_chain.index.write().unwrap();
                                     writer.push(CacheItem {
@@ -273,7 +327,9 @@ async fn handle_intercept(
                     }
                 }));
                 let body = Body::from_stream(stream);
+                // Fix 3: propagate upstream status code on streaming responses
                 return Response::builder()
+                    .status(status)
                     .header("content-type", "text/event-stream")
                     .header("cache-control", "no-store")
                     .header("x-stack-intercept", "miss")
@@ -285,22 +341,25 @@ async fn handle_intercept(
             let bytes = res.bytes().await.unwrap_or_default();
             let res_str = String::from_utf8_lossy(&bytes).to_string();
 
-            if is_cache_eligible {
-                if let Some(ref key_hash) = cache_key_hash {
-                    let mut cache = state.exact_cache.write().unwrap();
-                    cache.insert(key_hash.clone(), res_str.clone());
+            // Fix 4: only cache non-2xx responses
+            if is_success {
+                if is_cache_eligible {
+                    if let Some(ref key_hash) = cache_key_hash {
+                        let mut cache = state.exact_cache.write().unwrap();
+                        cache.insert(key_hash.clone(), res_str.clone());
+                    }
                 }
-            }
 
-            if should_do_semantic {
-                if let Some(ref target_vec) = target_coordinates {
-                    let mut writer = state.index.write().unwrap();
-                    writer.push(CacheItem {
-                        prompt: prompt.to_string(),
-                        vector: target_vec.clone(),
-                        completion_response: res_str.clone(),
-                        context_key: context_key.clone(),
-                    });
+                if semantic_eligible {
+                    if let Some(ref target_vec) = target_coordinates {
+                        let mut writer = state.index.write().unwrap();
+                        writer.push(CacheItem {
+                            prompt: prompt.to_string(),
+                            vector: target_vec.clone(),
+                            completion_response: res_str.clone(),
+                            context_key: context_key.clone(),
+                        });
+                    }
                 }
             }
 

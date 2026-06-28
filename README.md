@@ -1,6 +1,8 @@
 # StackIntercept
 
-A local Rust LLM proxy that intercepts OpenAI SDK calls and safely caches responses. Routes to DeepSeek by default for 90-95% cost savings vs GPT-4o. Builds toward model routing and semantic deduplication for controlled workloads.
+A local Rust LLM proxy that intercepts OpenAI SDK calls and safely caches responses. Forwards to DeepSeek by default for 90-95% cost savings vs GPT-4o. Builds toward provider routing and semantic deduplication for controlled workloads.
+
+> **Note:** Model weights (BGE-small-en-v1.5, 133 MB) are downloaded separately. This is not a single-binary deployment — model weights must be present at startup.
 
 ## Quickstart
 
@@ -18,7 +20,7 @@ Downloads BGE-small-en-v1.5 (133 MB) for semantic embeddings.
 export OPENAI_API_KEY="sk-deepseek-your-key-here"
 ```
 
-StackIntercept uses your DeepSeek key to route all requests through `api.deepseek.com` by default.
+StackIntercept uses your DeepSeek key to forward all requests through `api.deepseek.com` by default.
 
 ### 3. Start the proxy
 

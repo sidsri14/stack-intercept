@@ -29,10 +29,22 @@ pub struct CacheKey {
     pub stream: bool,
 }
 
+/// Extract the hostname from an upstream base URL.
+/// e.g. "https://api.deepseek.com" -> "api.deepseek.com"
+fn extract_hostname(upstream_base_url: &str) -> String {
+    upstream_base_url
+        .strip_prefix("https://")
+        .or_else(|| upstream_base_url.strip_prefix("http://"))
+        .and_then(|s| s.split('/').next())
+        .unwrap_or(upstream_base_url)
+        .to_string()
+}
+
 impl CacheKey {
     /// Build from a parsed chat completions payload.
     /// Returns None if the payload is not cache-eligible.
-    pub fn from_payload(payload: &Value, tenant_id: Option<String>) -> Option<Self> {
+    /// Fix 5: upstream_base_url is used to derive the provider field.
+    pub fn from_payload(payload: &Value, tenant_id: Option<String>, upstream_base_url: &str) -> Option<Self> {
         // Only cache when temperature is 0 or absent
         let temp = payload["temperature"].as_f64();
         if temp.is_some_and(|t| t != 0.0) {
@@ -49,7 +61,7 @@ impl CacheKey {
         let stream = payload["stream"].as_bool().unwrap_or(false);
 
         Some(Self {
-            provider: "openai".to_string(),
+            provider: extract_hostname(upstream_base_url),
             model: payload["model"].as_str().unwrap_or("unknown").to_string(),
             messages_json: serde_json::to_string(&payload["messages"]).unwrap_or_default(),
             tools_json: payload["tools"].get(0).map(|_| serde_json::to_string(&payload["tools"]).unwrap_or_default()),
