@@ -28,7 +28,7 @@ struct CacheItem {
     prompt: String,
     vector: Vec<f32>,
     completion_response: String,
-    context_key: String, // hash of all context dimensions for safety gating
+    context_key: String,
 }
 
 /// Build a deterministic context key for semantic safety gating.
@@ -47,55 +47,31 @@ fn build_context_key(
         let context_messages: Vec<&serde_json::Value> = if messages.len() > 1 {
             messages[..messages.len() - 1].iter().collect()
         } else {
-            vec![] // single-turn: no context beyond the lone user message
+            vec![]
         };
         hasher.update(serde_json::to_string(&context_messages).unwrap_or_default().as_bytes());
     }
 
-    // Model
     let model = payload["model"].as_str().unwrap_or("unknown");
     hasher.update(model.as_bytes());
-
-    // Provider / upstream URL
     hasher.update(upstream_base_url.as_bytes());
 
-    // Tenant
-    if let Some(t) = tenant_id {
-        hasher.update(t.as_bytes());
-    }
-
-    // Tools schema
+    if let Some(t) = tenant_id { hasher.update(t.as_bytes()); }
     if let Some(tools) = payload["tools"].as_array() {
-        if !tools.is_empty() {
-            hasher.update(serde_json::to_string(tools).unwrap_or_default().as_bytes());
-        }
+        if !tools.is_empty() { hasher.update(serde_json::to_string(tools).unwrap_or_default().as_bytes()); }
     }
-
-    // Response format
     if payload["response_format"].is_object() {
         hasher.update(serde_json::to_string(&payload["response_format"]).unwrap_or_default().as_bytes());
     }
-
-    // Tool choice
-    if !payload["tool_choice"].is_null() {
-        hasher.update(payload["tool_choice"].to_string().as_bytes());
-    }
-
-    // Temperature
-    if let Some(temp) = payload["temperature"].as_f64() {
-        hasher.update(&temp.to_le_bytes());
-    }
-
-    // Top_p
-    if let Some(tp) = payload["top_p"].as_f64() {
-        hasher.update(&tp.to_le_bytes());
-    }
+    if !payload["tool_choice"].is_null() { hasher.update(payload["tool_choice"].to_string().as_bytes()); }
+    if let Some(temp) = payload["temperature"].as_f64() { hasher.update(&temp.to_le_bytes()); }
+    if let Some(tp) = payload["top_p"].as_f64() { hasher.update(&tp.to_le_bytes()); }
 
     format!("{:x}", hasher.finalize())
 }
 
 struct AppState {
-    predictor: Option<LocalPredictor>,
+    predictor: Option<Arc<LocalPredictor>>,
     index: RwLock<Vec<CacheItem>>,
     exact_cache: RwLock<ExactCache>,
     config: ProxyConfig,
@@ -111,7 +87,7 @@ async fn main() {
 
     let predictor = if config.cache_mode == config::CacheMode::Semantic {
         println!("Initializing BGE Local Embedding Weights...");
-        Some(LocalPredictor::init_from_disk().expect("Failed to bind local model weights"))
+        Some(Arc::new(LocalPredictor::init_from_disk().expect("Failed to bind local model weights")))
     } else {
         println!("Skipping model load (not in semantic mode).");
         None
@@ -120,7 +96,7 @@ async fn main() {
     let shared_state = Arc::new(AppState {
         predictor,
         index: RwLock::new(Vec::new()),
-        exact_cache: RwLock::new(ExactCache::new(10000, 3600)),
+        exact_cache: RwLock::new(ExactCache::new(20000, 3600)),
         config,
         client: Client::new(),
     });
@@ -145,9 +121,7 @@ async fn handle_intercept(
     headers: HeaderMap,
     Json(payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let orig_auth = headers.get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
+    let orig_auth = headers.get("authorization").and_then(|h| h.to_str().ok()).unwrap_or("");
 
     let prompt = payload["messages"]
         .as_array()
@@ -157,7 +131,6 @@ async fn handle_intercept(
         .to_string();
 
     let is_streaming = payload["stream"].as_bool().unwrap_or(false);
-
     let has_no_store = payload["cache_control"].as_str() == Some("no_store");
 
     let tenant_id = state.config.tenant_id_header.as_ref()
@@ -165,35 +138,31 @@ async fn handle_intercept(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    // Build cache key (used for exact cache lookup)
     let cache_key_hash = cache_key_hash(&payload, tenant_id.clone(), &state.config.upstream_base_url);
-
-    // Build context key for semantic safety gating
     let context_key = build_context_key(&payload, &tenant_id, &state.config.upstream_base_url);
 
-    // Exact cache lookup (gated by config and no_store)
+    // 1. Exact cache lookup (O(1) via HashMap)
     if state.config.is_cache_enabled() && !has_no_store {
         if let Some(ref key_hash) = cache_key_hash {
             let cache = state.exact_cache.read().unwrap();
             if let Some(entry) = cache.get(key_hash) {
                 println!("Exact cache HIT for key {}", &key_hash[..12]);
+                let cached = entry.response_body.clone();
                 if is_streaming {
-                    let cached = entry.response_body.clone();
                     let stream = futures_util::stream::once(async move {
                         Ok::<_, std::io::Error>(Bytes::from(cached))
                     });
-                    let body = Body::from_stream(stream);
                     return Response::builder()
                         .header("content-type", "text/event-stream")
                         .header("x-stack-intercept", "hit")
-                        .body(body)
+                        .body(Body::from_stream(stream))
                         .unwrap()
                         .into_response();
                 } else {
                     return Response::builder()
                         .header("content-type", "application/json")
                         .header("x-stack-intercept", "hit")
-                        .body(Body::from(entry.response_body.clone()))
+                        .body(Body::from(cached))
                         .unwrap()
                         .into_response();
                 }
@@ -203,64 +172,54 @@ async fn handle_intercept(
 
     let is_cache_eligible = is_eligible(&payload);
 
-    // Fix 1: strict semantic eligibility — gates both lookup and insertion
-    // Combines semantic mode flag + no_store check + all cache-safety conditions
-    // Semantic eligibility: stricter than exact — also blocks response_format,
-    // tool_choice, and non-empty tools (empty tools array is fine)
     let semantic_eligible =
         state.config.is_semantic_allowed()
         && !has_no_store
         && is_cache_eligible
         && payload["response_format"].is_null()
         && payload["tool_choice"].is_null()
-        && {
-            let tools_arr = payload["tools"].as_array();
-            tools_arr.map_or(true, |a| a.is_empty())
-        };
+        && payload["tools"].as_array().map_or(true, |a| a.is_empty());
 
-    // Semantic cache lookup (only if strict eligibility passes)
+    // 2. Offload neural computations to blocking thread (spawn_blocking)
     let target_coordinates: Option<Vec<f32>> = if semantic_eligible {
         let predictor = match state.predictor.as_ref() {
-            Some(p) => p,
+            Some(p) => Arc::clone(p),
             None => return (StatusCode::INTERNAL_SERVER_ERROR, "Predictor not initialized").into_response(),
         };
-        match predictor.encode_text(&prompt) {
-            Ok(v) => Some(v),
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Vector mapping failure").into_response(),
+        let prompt_clone = prompt.clone();
+        match tokio::task::spawn_blocking(move || predictor.encode_text(&prompt_clone)).await {
+            Ok(Ok(v)) => Some(v),
+            _ => return (StatusCode::INTERNAL_SERVER_ERROR, "Vector mapping failure").into_response(),
         }
     } else {
         None
     };
 
-    // Scan vector space for high-affinity matches (gated by exact context)
+    // 3. Semantic cache scan (gated by context key)
     if semantic_eligible {
         if let Some(ref target_vec) = target_coordinates {
             let storage = state.index.read().unwrap();
             for item in storage.iter() {
-                // Safety gate: only match within same context key
-                if item.context_key != context_key {
-                    continue;
-                }
+                if item.context_key != context_key { continue; }
                 let score = compute_vector_dot(target_vec, &item.vector);
                 if score >= ALIGNMENT_BAR {
-                    println!("Semantic HIT! Similarity Score: {:.4}. Bypassing upstream latency entirely.", score);
+                    println!("Semantic HIT! Similarity: {:.4}", score);
+                    let cached = item.completion_response.clone();
                     if is_streaming {
-                        let cached = item.completion_response.clone();
                         let stream = futures_util::stream::once(async move {
                             Ok::<_, std::io::Error>(Bytes::from(cached))
                         });
-                        let body = Body::from_stream(stream);
                         return Response::builder()
                             .header("content-type", "text/event-stream")
                             .header("x-stack-intercept", "hit")
-                            .body(body)
+                            .body(Body::from_stream(stream))
                             .unwrap()
                             .into_response();
                     } else {
                         return Response::builder()
                             .header("content-type", "application/json")
                             .header("x-stack-intercept", "hit")
-                            .body(Body::from(item.completion_response.clone()))
+                            .body(Body::from(cached))
                             .unwrap()
                             .into_response();
                     }
@@ -269,7 +228,7 @@ async fn handle_intercept(
         }
     }
 
-    // Cache MISS -> Pipe out to upstream provider
+    // 4. Cache miss — forward to upstream
     let upstream_url = format!("{}/v1/chat/completions", state.config.upstream_base_url);
     let upstream_res = state.client.post(&upstream_url)
         .header("authorization", orig_auth)
@@ -287,83 +246,75 @@ async fn handle_intercept(
                 let vector_clone = target_coordinates.clone();
                 let state_clone = Arc::clone(&state);
                 let cache_key_hash_clone = cache_key_hash.clone();
-                let buffered_body = Arc::new(std::sync::Mutex::new(Vec::new()));
-                let buffered_body_clone = Arc::clone(&buffered_body);
+                let context_key_clone = context_key.clone();
 
+                let raw_byte_accumulator = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let accumulator_clone = Arc::clone(&raw_byte_accumulator);
+
+                // Forward chunks while accumulating raw bytes
                 let stream = res.bytes_stream().map(move |chunk_result| {
                     match chunk_result {
                         Ok(bytes) => {
-                            let mut buf = buffered_body.lock().unwrap();
-                            buf.extend_from_slice(&bytes);
+                            if let Ok(mut buf) = raw_byte_accumulator.lock() {
+                                buf.extend_from_slice(&bytes);
+                            }
                             Ok(bytes)
                         },
                         Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
                     }
                 });
 
-                // When the stream ends, flush buffered content to cache
-                let stream = stream.chain(stream::once({
-                    let state_chain = Arc::clone(&state_clone);
-                    let prompt_chain = prompt_clone.clone();
-                    let vector_chain = vector_clone.clone();
-                    let key_hash_chain = cache_key_hash_clone.clone();
-                    async move {
-                        let final_content = buffered_body_clone.lock().unwrap().clone();
-                        if !final_content.is_empty() && is_success {
-                            // Convert complete Vec<u8> to String once (safe: all chunks assembled)
-                            let final_body = String::from_utf8_lossy(&final_content).to_string();
-                            if is_cache_eligible {
-                                if let Some(ref key_hash) = key_hash_chain {
-                                    let mut cache = state_chain.exact_cache.write().unwrap();
-                                    cache.insert(key_hash.clone(), final_content.clone());
-                                    println!("Stream cached (exact).");
-                                }
-                            }
-                            if semantic_eligible {
-                                if let Some(ref vector) = vector_chain {
-                                    let mut writer = state_chain.index.write().unwrap();
-                                    writer.push(CacheItem {
-                                        prompt: prompt_chain.clone(),
-                                        vector: vector.clone(),
-                                        completion_response: final_body,
-                                        context_key: context_key.clone(),
-                                    });
-                                    println!("Stream cached via semantic coordinates.");
-                                }
+                // When stream ends, flush accumulated bytes to cache
+                let stream = stream.chain(stream::once(async move {
+                    let final_bytes = accumulator_clone.lock().unwrap().clone();
+                    if !final_bytes.is_empty() && is_success {
+                        let final_body = String::from_utf8_lossy(&final_bytes).to_string();
+
+                        if is_cache_eligible {
+                            if let Some(ref key_hash) = cache_key_hash_clone {
+                                state_clone.exact_cache.write().unwrap().insert(key_hash.clone(), final_bytes.clone());
+                                println!("Stream cached (exact).");
                             }
                         }
-                        // Return an empty Ok that the client won't see as meaningful SSE
-                        Ok::<_, std::io::Error>(Bytes::new())
+                        if semantic_eligible {
+                            if let Some(ref vector) = vector_clone {
+                                let mut writer = state_clone.index.write().unwrap();
+                                writer.push(CacheItem {
+                                    prompt: prompt_clone.clone(),
+                                    vector: vector.clone(),
+                                    completion_response: final_body,
+                                    context_key: context_key_clone,
+                                });
+                                println!("Stream cached via semantic coordinates.");
+                            }
+                        }
                     }
+                    Ok::<_, std::io::Error>(Bytes::new())
                 }));
-                let body = Body::from_stream(stream);
-                // Fix 3: propagate upstream status code on streaming responses
+
                 return Response::builder()
                     .status(status)
                     .header("content-type", "text/event-stream")
                     .header("cache-control", "no-store")
                     .header("x-stack-intercept", "miss")
-                    .body(body)
+                    .body(Body::from_stream(stream))
                     .unwrap()
                     .into_response();
             }
 
+            // Non-streaming path
             let bytes = res.bytes().await.unwrap_or_default();
             let res_str = String::from_utf8_lossy(&bytes).to_string();
 
-            // Fix 4: only cache non-2xx responses
             if is_success {
                 if is_cache_eligible {
                     if let Some(ref key_hash) = cache_key_hash {
-                        let mut cache = state.exact_cache.write().unwrap();
-                        cache.insert(key_hash.clone(), res_str.clone().into_bytes());
+                        state.exact_cache.write().unwrap().insert(key_hash.clone(), bytes.to_vec());
                     }
                 }
-
                 if semantic_eligible {
                     if let Some(ref target_vec) = target_coordinates {
-                        let mut writer = state.index.write().unwrap();
-                        writer.push(CacheItem {
+                        state.index.write().unwrap().push(CacheItem {
                             prompt: prompt.to_string(),
                             vector: target_vec.clone(),
                             completion_response: res_str.clone(),

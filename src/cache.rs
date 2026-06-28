@@ -1,6 +1,7 @@
 use serde_json::Value;
 use sha2::{Sha256, Digest};
 use std::time::{Duration, Instant};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct CachedEntry {
@@ -10,7 +11,7 @@ pub struct CachedEntry {
 }
 
 pub struct ExactCache {
-    entries: Vec<(String, CachedEntry)>,
+    entries: HashMap<String, CachedEntry>,
     max_entries: usize,
     default_ttl: Duration,
 }
@@ -29,9 +30,7 @@ fn extract_hostname(upstream_base_url: &str) -> String {
 /// Build a deterministic SHA256 hash of the full canonical payload for exact cache lookup.
 /// Returns None if the request is not cache-eligible.
 pub fn cache_key_hash(payload: &Value, tenant_id: Option<String>, upstream_base_url: &str) -> Option<String> {
-    if !is_eligible(payload) {
-        return None;
-    }
+    if !is_eligible(payload) { return None; }
 
     let mut hasher = Sha256::new();
 
@@ -39,9 +38,7 @@ pub fn cache_key_hash(payload: &Value, tenant_id: Option<String>, upstream_base_
     hasher.update(extract_hostname(upstream_base_url).as_bytes());
 
     // Tenant
-    if let Some(t) = tenant_id {
-        hasher.update(t.as_bytes());
-    }
+    if let Some(t) = tenant_id { hasher.update(t.as_bytes()); }
 
     // Canonical full payload JSON (sorted keys)
     hasher.update(serde_json::to_string(payload).unwrap_or_default().as_bytes());
@@ -67,35 +64,41 @@ pub fn is_eligible(payload: &Value) -> bool {
 impl ExactCache {
     pub fn new(max_entries: usize, default_ttl_secs: u64) -> Self {
         Self {
-            entries: Vec::with_capacity(max_entries.min(1024)),
+            entries: HashMap::with_capacity(max_entries.min(1024)),
             max_entries,
             default_ttl: Duration::from_secs(default_ttl_secs),
         }
     }
 
     pub fn get(&self, key: &str) -> Option<&CachedEntry> {
-        self.entries.iter().find_map(|(k, v)| {
-            if k == key && v.created_at.elapsed() < v.ttl {
-                Some(v)
-            } else {
-                None
+        if let Some(entry) = self.entries.get(key) {
+            if entry.created_at.elapsed() < entry.ttl {
+                return Some(entry);
             }
-        })
+        }
+        None
     }
 
     pub fn insert(&mut self, key: String, body: Vec<u8>) {
+        // Evict if at capacity
         if self.entries.len() >= self.max_entries {
-            // Remove oldest expired entry, or oldest overall
-            if let Some(pos) = self.entries.iter().position(|(_, e)| e.created_at.elapsed() >= e.ttl) {
-                self.entries.remove(pos);
+            let expired_key = self.entries.iter()
+                .find(|(_, e)| e.created_at.elapsed() >= e.ttl)
+                .map(|(k, _)| k.clone());
+
+            if let Some(k) = expired_key {
+                self.entries.remove(&k);
             } else {
-                self.entries.remove(0);
+                // Remove any entry (arbitrary — HashMap iteration order is unstable)
+                if let Some(k) = self.entries.keys().next().cloned() {
+                    self.entries.remove(&k);
+                }
             }
         }
-        self.entries.push((key, CachedEntry {
+        self.entries.insert(key, CachedEntry {
             response_body: body,
             created_at: Instant::now(),
             ttl: self.default_ttl,
-        }));
+        });
     }
 }
