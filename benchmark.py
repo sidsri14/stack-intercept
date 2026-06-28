@@ -25,10 +25,10 @@ import urllib.request
 
 PROXY_PORT = 8080
 MOCK_PORT = 8081
-FALLBACK_MOCK_PORT = 8083
+ROUTED_FALLBACK_PORT = 8083
 PROXY_URL = f"http://127.0.0.1:{PROXY_PORT}/v1/chat/completions"
 MOCK_URL = f"http://127.0.0.1:{MOCK_PORT}"
-FALLBACK_MOCK_URL = f"http://127.0.0.1:{FALLBACK_MOCK_PORT}"
+ROUTED_FALLBACK_URL = f"http://127.0.0.1:{ROUTED_FALLBACK_PORT}"
 
 N_ITERATIONS = 5  # run each scenario N times, report median
 
@@ -57,35 +57,6 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
             }, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
         }).encode())
-
-    def log_message(self, fmt, *args):
-        pass
-
-
-class SSEHandler(http.server.BaseHTTPRequestHandler):
-    """Returns SSE response for streaming tests."""
-    def do_POST(self):
-        content_len = int(self.headers.get("Content-Length", 0))
-        self.rfile.read(content_len)
-        time.sleep(0.050)
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.end_headers()
-        chunk = json.dumps({
-            "id": "bench-cmpl-sse",
-            "object": "chat.completion.chunk",
-            "created": 1700000000,
-            "model": "mock",
-            "choices": [{"index": 0, "delta": {"content": "Bench"}, "finish_reason": None}],
-        })
-        done = json.dumps({
-            "id": "bench-cmpl-sse",
-            "object": "chat.completion.chunk",
-            "created": 1700000000,
-            "model": "mock",
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        })
-        self.wfile.write(f"data: {chunk}\n\ndata: {done}\n\ndata: [DONE]\n\n".encode())
 
     def log_message(self, fmt, *args):
         pass
@@ -179,7 +150,6 @@ def main():
 
     # Start mock servers
     mock_server = start_mock(MOCK_PORT, MockHandler)
-    sse_server = start_mock(FALLBACK_MOCK_PORT, SSEHandler)
 
     cold_payload = {
         "model": "mock-model",
@@ -253,11 +223,8 @@ def main():
         print("FAILED: Proxy did not start")
         sys.exit(1)
 
-    # First request to populate cache (point streaming requests at the SSE mock)
-    env_sse = {"STACK_INTERCEPT_UPSTREAM_URL": f"http://127.0.0.1:{FALLBACK_MOCK_PORT}"}
-    # We need a proxy that routes streaming to the SSE mock — let's just use default mock
-    # Actually the SSE handler is on FALLBACK_MOCK_PORT. Let's use the regular mock for simplicity
-    # The regular mock response works for streaming too since the proxy caches the raw bytes.
+    # First request to populate cache. Uses the regular mock (stream is just
+    # a flag — the proxy caches raw bytes regardless of content type).
     send_request(stream_payload)
     name, lat, hit = benchmark_scenario("Streaming exact cache hit", lambda: stream_payload)
     results.append((name, lat, hit))
@@ -310,13 +277,13 @@ def main():
     # ---- 5. Routed fallback request ----
     print("Benchmarking: routed fallback request...")
     # Start fallback mock server
-    fallback_server = start_mock(FALLBACK_MOCK_PORT, MockHandler)
+    fallback_server = start_mock(ROUTED_FALLBACK_PORT, MockHandler)
 
     def fallback_startup():
         nonlocal proxy
         proxy = start_proxy({
             "STACK_INTERCEPT_ALLOW_MODEL_REWRITE": "true",
-            "STACK_INTERCEPT_FALLBACK_URL": f"http://127.0.0.1:{FALLBACK_MOCK_PORT}",
+            "STACK_INTERCEPT_FALLBACK_URL": f"http://127.0.0.1:{ROUTED_FALLBACK_PORT}",
             "STACK_INTERCEPT_FALLBACK_API_KEY": "sk-fallback-bench",
         })
 
@@ -368,7 +335,6 @@ def main():
 
     # Cleanup
     mock_server.shutdown()
-    sse_server.shutdown()
     fallback_server.shutdown()
 
     return 0

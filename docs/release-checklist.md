@@ -70,7 +70,7 @@ strip target/x86_64-unknown-linux-gnu/release/stack-intercept
 ## GitHub Release
 
 - [ ] Tag: `git tag v0.1.0 && git push --tags`
-- [ ] Create release at https://github.com/sidhantp/stack-intercept/releases
+- [ ] Create release at https://github.com/sidsri14/stack-intercept/releases
 - [ ] Upload Linux binary: `stack-intercept-v0.1.0-x86_64-unknown-linux-gnu.tar.gz`
 - [ ] Upload Windows binary: `stack-intercept-v0.1.0-x86_64-pc-windows-msvc.zip`
 - [ ] Write release notes (copy from CHANGELOG)

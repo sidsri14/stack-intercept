@@ -13,10 +13,10 @@ cargo build --release --target x86_64-unknown-linux-gnu
 strip target/x86_64-unknown-linux-gnu/release/stack-intercept
 
 # Package with model download script
-tar czf stack-intercept-linux-x86_64.tar.gz \
-    -C target/x86_64-unknown-linux-gnu/release stack-intercept \
-    download_model.sh \
-    .env.example
+mkdir -p dist/stack-intercept
+cp target/x86_64-unknown-linux-gnu/release/stack-intercept dist/stack-intercept/
+cp download_model.sh .env.example README.md dist/stack-intercept/
+tar czf stack-intercept-linux-x86_64.tar.gz -C dist stack-intercept
 
 echo "Created: stack-intercept-linux-x86_64.tar.gz"
 

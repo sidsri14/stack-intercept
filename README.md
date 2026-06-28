@@ -74,7 +74,7 @@ Cache rules:
 - Only caches when `temperature=0` (deterministic output)
 - Ignores requests with `tools`, `response_format`, or `cache_control: no_store`
 - Tenant-isolated via `STACK_INTERCEPT_TENANT_ID_HEADER`
-- TTL: 1 hour, LRU eviction up to 20,000 entries
+- TTL: 1 hour, oldest-entry eviction up to 20,000 entries
 - Non-2xx responses are never cached
 
 ### Semantic mode (opt-in)
