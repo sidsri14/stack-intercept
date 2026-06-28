@@ -174,13 +174,28 @@ async fn handle_intercept(
         .unwrap_or(false);
 
     // Evaluate routing BEFORE cache lookup so the cache key is namespace-aware
-    let route = evaluate_routing(
+    let mut route = evaluate_routing(
         &payload,
         &state.config.upstream_base_url,
         &state.config.fallback_base_url,
         state.config.allow_model_rewrite,
         no_route,
     );
+
+    // Safety: if routing chose fallback but no fallback API key is configured,
+    // force passthrough to prevent leaking the original provider's API key
+    // to an unknown downstream.
+    if route.needs_fallback_key && state.config.fallback_api_key.is_none() {
+        println!(
+            "Route blocked (no fallback key configured): {} stays on upstream.",
+            requested_model
+        );
+        route = router::RouteDecision {
+            final_url: format!("{}/v1/chat/completions", state.config.upstream_base_url),
+            final_model: requested_model.clone(),
+            needs_fallback_key: false,
+        };
+    }
 
     let route_label = if route.needs_fallback_key { "fallback" } else { "passthrough" };
     let routed_model = &route.final_model;

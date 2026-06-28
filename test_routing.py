@@ -120,13 +120,16 @@ def proxy_binary():
     return base + ".exe" if sys.platform == "win32" else base
 
 
-def start_proxy(allow_rewrite="true"):
+def start_proxy(allow_rewrite="true", set_fallback_key=True):
     env = os.environ.copy()
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
     env["STACK_INTERCEPT_ALLOW_MODEL_REWRITE"] = allow_rewrite
     env["STACK_INTERCEPT_UPSTREAM_URL"] = MOCK_UPSTREAM_URL
     env["STACK_INTERCEPT_FALLBACK_URL"] = MOCK_FALLBACK_URL
-    env["STACK_INTERCEPT_FALLBACK_API_KEY"] = "sk-fallback-secret"
+    if set_fallback_key:
+        env["STACK_INTERCEPT_FALLBACK_API_KEY"] = "sk-fallback-secret"
+    # Unset DEEPSEEK_API_KEY if present so test env is clean
+    env.pop("DEEPSEEK_API_KEY", None)
     proc = subprocess.Popen(
         [proxy_binary()],
         env=env,
@@ -428,6 +431,43 @@ def main():
         check("status is 200", status == 200)
         check("route is passthrough", route == "passthrough")
         check("body from upstream", "Upstream response" in body)
+        print()
+
+        # =========================================================
+        # Test 11: Routing enabled, no fallback key -> passthrough (no leak)
+        # =========================================================
+        print("=" * 60)
+        print("Test 11: routing enabled + no fallback key -> passthrough (no auth leak)")
+        proxy.terminate()
+        proxy.wait(timeout=5)
+        upstream_mock.reset()
+        fallback_mock.reset()
+
+        proxy = start_proxy("true", set_fallback_key=False)
+        if not wait_for(PROXY_URL):
+            print("FAILED: Proxy did not start")
+            sys.exit(1)
+
+        no_key_payload = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello world"}],
+            "temperature": 0,
+            "stream": False,
+        }
+        hit, route, orig_model, routed_model, status, body = send_request(no_key_payload)
+        check("status is 200", status == 200)
+        check("route is passthrough (safe fallback)", route == "passthrough")
+        check("routed model equals original", routed_model == "gpt-4o")
+        check("body from upstream", "Upstream response" in body)
+        check("upstream received request", upstream_mock.request_count == 1)
+        check("fallback received 0 requests (not leaked)", fallback_mock.request_count == 0)
+
+        # Verify upstream received the original auth, not a leaked key
+        up_req = upstream_mock.last_request
+        if up_req:
+            up_auth = up_req.headers.get("authorization", "")
+            check("upstream auth is original", "test-key" in up_auth)
+            check("upstream auth does not have fallback key", "sk-fallback-secret" not in up_auth)
         print()
 
         # =========================================================
