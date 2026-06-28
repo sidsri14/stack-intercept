@@ -6,7 +6,7 @@ A local Rust LLM proxy that intercepts OpenAI SDK calls for caching and model ro
 ## Architecture Priority Order
 Compatibility → Safety → Exact cache → Semantic cache → HNSW → Dynamic routing → Benchmarks
 
-Never chase "semantic 0ms" before passthrough correctness. Exact cache is default; semantic is opt-in via `STACK_INTERCEPT_CACHE_MODE=semantic`.
+Routing is opt-in (`STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`). Cache keys include routing namespace to prevent cross-contamination. Route headers are added to all responses for transparency.
 
 ## File Map
 
@@ -14,7 +14,8 @@ Never chase "semantic 0ms" before passthrough correctness. Exact cache is defaul
 - `src/main.rs` — Axum HTTP server, `/v1/chat/completions` handler, AppState, streaming passthrough, cache orchestration
 - `src/embeddings.rs` — `LocalPredictor` struct: `init_from_disk()`, `encode_text(&str) -> Vec<f32>`. BGE-small-en-v1.5 model, 384-dim, mean pooling + L2 normalization
 - `src/cache.rs` — `cache_key_hash()` (SHA256 of canonical full payload + provider + tenant), `is_eligible()` checks, `ExactCache` (bounded TTL-based with `Vec<u8>` body), `CachedEntry`
-- `src/config.rs` — `ProxyConfig::from_env()` reads `STACK_INTERCEPT_CACHE_MODE`, `STACK_INTERCEPT_TENANT_ID_HEADER`
+- `src/router.rs` — `evaluate_routing()` inspects payload, classifies prompt complexity, decides whether to downgrade premium models to cheap models. Opt-in via `STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`.
+- `src/config.rs` — `ProxyConfig::from_env()` reads `STACK_INTERCEPT_CACHE_MODE`, `STACK_INTERCEPT_TENANT_ID_HEADER`, `STACK_INTERCEPT_ALLOW_MODEL_REWRITE`, `STACK_INTERCEPT_UPSTREAM_URL`, `STACK_INTERCEPT_FALLBACK_URL`, `STACK_INTERCEPT_FALLBACK_API_KEY`
 
 ### Scripts & Config
 - `build.cmd` — MSVC build env wrapper (VS Build Tools 2022, 14.44.35207). Run `./build.cmd build` (use Git Bash, not `.\build.cmd`)
@@ -64,6 +65,8 @@ export OPENAI_API_KEY="sk-..."
 # Test
 python test_proxy.py
 python test_semantic_safety.py
+python test_mock_upstream.py
+python test_routing.py     # requires STACK_INTERCEPT_ALLOW_MODEL_REWRITE tests
 ```
 
 ## Configuration
@@ -73,6 +76,18 @@ python test_semantic_safety.py
 | `STACK_INTERCEPT_MODEL_DIR` | `./model` | Path to BGE model files |
 | `STACK_INTERCEPT_CACHE_MODE` | `exact` | `off`, `exact`, or `semantic` |
 | `STACK_INTERCEPT_TENANT_ID_HEADER` | (none) | Header name for tenant isolation |
+| `STACK_INTERCEPT_ALLOW_MODEL_REWRITE` | `false` | Enable dynamic model routing (opt-in) |
+| `STACK_INTERCEPT_UPSTREAM_URL` | `https://api.deepseek.com` | Primary LLM provider base URL |
+| `STACK_INTERCEPT_FALLBACK_URL` | `https://api.deepseek.com` | Fallback (cheap) provider base URL for routed requests |
+| `STACK_INTERCEPT_FALLBACK_API_KEY` | (from `DEEPSEEK_API_KEY`) | API key for fallback provider |
+
+### Route headers (all responses)
+- `x-stack-intercept-route`: `passthrough` or `fallback`
+- `x-stack-intercept-original-model`: the model the client requested
+- `x-stack-intercept-routed-model`: the model actually used to serve the request
+
+### Per-request routing opt-out
+Set `x-stack-intercept-no-route: true` on any request to bypass routing entirely.
 
 ## Candle-specific Notes
 - `Device::Cpu` with SIMD — no AVX-512 guarantee. CUDA feature exists but untested.

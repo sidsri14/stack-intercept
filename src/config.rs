@@ -33,7 +33,7 @@ impl ProxyConfig {
 
         let allow_model_rewrite = env::var("STACK_INTERCEPT_ALLOW_MODEL_REWRITE")
             .map(|v| v == "true" || v == "1")
-            .unwrap_or(true);
+            .unwrap_or(false);
 
         let upstream_base_url = env::var("STACK_INTERCEPT_UPSTREAM_URL")
             .unwrap_or_else(|_| "https://api.deepseek.com".to_string());

@@ -1,11 +1,15 @@
 """
-Dynamic routing verification test.
+Dynamic routing verification test with two mock servers.
 
-Starts the mock upstream server + proxy with routing enabled, sends a
-premium-model request with a simple prompt, and verifies the proxy
-routes it through (no crash, valid response). No API keys required.
+Starts a mock upstream server and a mock fallback server, starts the proxy
+with routing enabled, and verifies:
+- Premium models with simple prompts are routed to fallback
+- Identical requests are cache hits with route headers
+- High-reasoning prompts are NOT routed
+- Outbound model in fallback requests is correct
+- Auth header format is correct (Bearer prefix)
+- Route headers are present on all responses
 """
-
 import http.server
 import json
 import os
@@ -17,57 +21,112 @@ import urllib.error
 import urllib.request
 
 PROXY_PORT = 8080
-MOCK_PORT = 8099
+MOCK_UPSTREAM_PORT = 8098
+MOCK_FALLBACK_PORT = 8099
 PROXY_URL = f"http://127.0.0.1:{PROXY_PORT}/v1/chat/completions"
+MOCK_UPSTREAM_URL = f"http://127.0.0.1:{MOCK_UPSTREAM_PORT}"
+MOCK_FALLBACK_URL = f"http://127.0.0.1:{MOCK_FALLBACK_PORT}"
 
 PASS = 0
 FAIL = 0
 
-mock_response = json.dumps({
-    "id": "routing-cmpl-001",
+
+class RequestCapture:
+    """Captures details of a single mock request."""
+    def __init__(self, method, path, headers, body):
+        self.method = method
+        self.path = path
+        self.headers = headers
+        self.body = body
+
+
+class MockServer:
+    """Mock HTTP server that captures requests for verification."""
+    def __init__(self, port, response_data):
+        self.port = port
+        self.response_data = response_data
+        self.captured_requests = []
+        self.request_lock = threading.Lock()
+        self.server = None
+
+    def start(self):
+        server = http.server.HTTPServer(("127.0.0.1", self.port), self._make_handler())
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        self.server = server
+        return server
+
+    def _make_handler(self):
+        owner = self
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len)
+                with owner.request_lock:
+                    owner.captured_requests.append(RequestCapture(
+                        self.command, self.path, dict(self.headers), body,
+                    ))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(owner.response_data)
+
+            def log_message(self, fmt, *args):
+                pass
+        return Handler
+
+    @property
+    def request_count(self):
+        with self.request_lock:
+            return len(self.captured_requests)
+
+    @property
+    def last_request(self):
+        with self.request_lock:
+            return self.captured_requests[-1] if self.captured_requests else None
+
+    def shutdown(self):
+        if self.server:
+            self.server.shutdown()
+
+    def reset(self):
+        with self.request_lock:
+            self.captured_requests.clear()
+
+
+# Separate response bodies so we can distinguish which server responded
+upstream_response = json.dumps({
+    "id": "upstream-cmpl-001",
+    "object": "chat.completion",
+    "created": 1700000000,
+    "model": "gpt-4o",
+    "choices": [{"index": 0, "message": {"role": "assistant", "content": "Upstream response"}, "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+}).encode()
+
+fallback_response = json.dumps({
+    "id": "fallback-cmpl-001",
     "object": "chat.completion",
     "created": 1700000000,
     "model": "deepseek-chat",
-    "choices": [{
-        "index": 0,
-        "message": {"role": "assistant", "content": "Routed response"},
-        "finish_reason": "stop"
-    }],
-    "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+    "choices": [{"index": 0, "message": {"role": "assistant", "content": "Fallback response"}, "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
 }).encode()
 
 
-class MockHandlerRouting(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_len = int(self.headers.get("Content-Length", 0))
-        self.rfile.read(content_len)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(mock_response)
-
-    def log_message(self, fmt, *args):
-        pass
-
-
-def start_mock():
-    server = http.server.HTTPServer(("127.0.0.1", MOCK_PORT), MockHandlerRouting)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    return server
-
-
 def proxy_binary():
-    base = "./target/release/stack-intercept"
+    # Use debug binary for CI consistency (release build is separate)
+    base = "./target/debug/stack-intercept"
     return base + ".exe" if sys.platform == "win32" else base
 
 
-def start_proxy():
+def start_proxy(allow_rewrite="true"):
     env = os.environ.copy()
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
-    env["STACK_INTERCEPT_ALLOW_MODEL_REWRITE"] = "true"
-    env["STACK_INTERCEPT_UPSTREAM_URL"] = f"http://127.0.0.1:{MOCK_PORT}"
-    env["STACK_INTERCEPT_FALLBACK_URL"] = f"http://127.0.0.1:{MOCK_PORT}"
+    env["STACK_INTERCEPT_ALLOW_MODEL_REWRITE"] = allow_rewrite
+    env["STACK_INTERCEPT_UPSTREAM_URL"] = MOCK_UPSTREAM_URL
+    env["STACK_INTERCEPT_FALLBACK_URL"] = MOCK_FALLBACK_URL
+    env["STACK_INTERCEPT_FALLBACK_API_KEY"] = "sk-fallback-secret"
     proc = subprocess.Popen(
         [proxy_binary()],
         env=env,
@@ -92,41 +151,55 @@ def wait_for(url, timeout=15):
     return False
 
 
-def send_request(payload):
+def send_request(payload, extra_headers=None):
     data = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer test-key"}
+    if extra_headers:
+        headers.update(extra_headers)
     req = urllib.request.Request(
         PROXY_URL, data=data,
-        headers={"Content-Type": "application/json", "Authorization": "Bearer test-key"},
+        headers=headers,
         method="POST",
     )
     try:
         resp = urllib.request.urlopen(req, timeout=15)
         hit = resp.headers.get("x-stack-intercept", "")
+        route = resp.headers.get("x-stack-intercept-route", "")
+        orig_model = resp.headers.get("x-stack-intercept-original-model", "")
+        routed_model = resp.headers.get("x-stack-intercept-routed-model", "")
         body = resp.read().decode()
-        return hit, resp.status, body
+        return hit, route, orig_model, routed_model, resp.status, body
     except urllib.error.HTTPError as e:
         hit = e.headers.get("x-stack-intercept", "")
-        return hit, e.code, e.read().decode()
+        route = e.headers.get("x-stack-intercept-route", "")
+        orig_model = e.headers.get("x-stack-intercept-original-model", "")
+        routed_model = e.headers.get("x-stack-intercept-routed-model", "")
+        return hit, route, orig_model, routed_model, e.code, e.read().decode()
 
 
-def check(name, cond):
+def check(name, cond, detail=""):
     global PASS, FAIL
     if cond:
         PASS += 1
-        print(f"  PASS: {name}")
+        print(f"  PASS: {name} {detail}")
     else:
         FAIL += 1
-        print(f"  FAIL: {name}")
+        print(f"  FAIL: {name} {detail}")
 
 
 def main():
     global PASS, FAIL
 
-    print("Starting mock server...")
-    mock = start_mock()
+    print("Starting mock upstream server (port {})...".format(MOCK_UPSTREAM_PORT))
+    upstream_mock = MockServer(MOCK_UPSTREAM_PORT, upstream_response)
+    upstream_mock.start()
+
+    print("Starting mock fallback server (port {})...".format(MOCK_FALLBACK_PORT))
+    fallback_mock = MockServer(MOCK_FALLBACK_PORT, fallback_response)
+    fallback_mock.start()
 
     print("Starting proxy (routing enabled)...")
-    proxy = start_proxy()
+    proxy = start_proxy("true")
 
     try:
         if not wait_for(PROXY_URL):
@@ -134,46 +207,165 @@ def main():
             sys.exit(1)
         print("  Proxy online.\n")
 
-        # Request gpt-4o with a simple prompt — routing should trigger
+        # =========================================================
+        # Test 1: gpt-4o simple prompt -> routed to fallback
+        # =========================================================
+        print("=" * 60)
+        print("Test 1: gpt-4o simple prompt -> routed to fallback")
         payload = {
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": "What is the capital of France?"}],
             "temperature": 0,
             "stream": False,
         }
-
-        print("=" * 60)
-        print("Test: gpt-4o simple prompt -> routed to fallback")
-        hit, status, body = send_request(payload)
+        hit, route, orig_model, routed_model, status, body = send_request(payload)
         check("status is 200", status == 200)
         check("not a cache hit", hit != "hit")
-        check("body contains response", "Routed response" in body)
+        check("route is fallback", route == "fallback")
+        check("original model is gpt-4o", orig_model == "gpt-4o")
+        check("routed model is deepseek-chat", routed_model == "deepseek-chat")
+        check("body is from fallback", "Fallback response" in body)
+        check("upstream received 0 requests", upstream_mock.request_count == 0)
+        check("fallback received 1 request", fallback_mock.request_count == 1)
+
+        # Verify outbound request to fallback
+        fb_req = fallback_mock.last_request
+        if fb_req:
+            fb_body = json.loads(fb_req.body)
+            check("fallback model is deepseek-chat", fb_body.get("model") == "deepseek-chat")
+            # Verify auth header has Bearer prefix
+            auth_header = fb_req.headers.get("authorization", "")
+            check("auth has Bearer prefix", auth_header.startswith("Bearer "),
+                  f"(auth: {auth_header[:20]}...)")
+            check("auth uses fallback key", "sk-fallback-secret" in auth_header)
         print()
 
-        # Second request — should be a cache hit (exact match)
+        # =========================================================
+        # Test 2: Identical request -> cache hit
+        # =========================================================
         print("=" * 60)
-        print("Test: identical request -> cache hit")
-        hit, status, body = send_request(payload)
+        print("Test 2: identical request -> cache hit with route headers")
+        hit, route, orig_model, routed_model, status, body = send_request(payload)
         check("status is 200", status == 200)
         check("is a cache hit", hit == "hit")
-        check("body preserved", "Routed response" in body)
+        check("route header on hit", route == "fallback")
+        check("original model on hit", orig_model == "gpt-4o")
+        check("routed model on hit", routed_model == "deepseek-chat")
+        check("body preserved", "Fallback response" in body)
+        # No additional requests to either server
+        check("upstream still 0 requests", upstream_mock.request_count == 0)
+        check("fallback still 1 request", fallback_mock.request_count == 1)
         print()
 
-        # Request gpt-4o with a high-reasoning keyword — routing should NOT trigger
+        # =========================================================
+        # Test 3: gpt-4o with high-reasoning keyword -> NOT routed
+        # =========================================================
         print("=" * 60)
-        print("Test: gpt-4o with 'cryptography' -> NOT routed (high reasoning)")
+        print("Test 3: gpt-4o with 'cryptography' -> NOT routed (high reasoning)")
         crypto_payload = {
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": "Explain AES cryptography"}],
+            "messages": [{"role": "user", "content": "Explain AES cryptography in detail"}],
             "temperature": 0,
             "stream": False,
         }
-        hit, status, body = send_request(crypto_payload)
+        hit, route, orig_model, routed_model, status, body = send_request(crypto_payload)
         check("status is 200", status == 200)
-        # Still gets a response since the mock handles all models
-        check("not a cache hit", hit != "hit")
+        check("route is passthrough", route == "passthrough")
+        check("original model is gpt-4o", orig_model == "gpt-4o")
+        check("routed model equals original", routed_model == "gpt-4o")
+        check("body is from upstream", "Upstream response" in body)
+        check("upstream received 1 request", upstream_mock.request_count == 1)
+        check("fallback still 1 request", fallback_mock.request_count == 1)
         print()
 
+        # =========================================================
+        # Test 4: gpt-4o with tools -> NOT routed
+        # =========================================================
+        print("=" * 60)
+        print("Test 4: gpt-4o with tools -> NOT routed (unsafe feature)")
+        tools_payload = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "What's the weather?"}],
+            "temperature": 0,
+            "stream": False,
+            "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {}}}}],
+        }
+        hit, route, orig_model, routed_model, status, body = send_request(tools_payload)
+        check("status is 200", status == 200)
+        check("route is passthrough", route == "passthrough")
+        check("body from upstream", "Upstream response" in body)
+        check("upstream got this request", upstream_mock.request_count == 2)
+        print()
+
+        # =========================================================
+        # Test 5: gpt-4o with temperature > 0 -> NOT routed
+        # =========================================================
+        print("=" * 60)
+        print("Test 5: gpt-4o with temperature=0.7 -> NOT routed (non-deterministic)")
+        temp_payload = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Write a poem"}],
+            "temperature": 0.7,
+            "stream": False,
+        }
+        hit, route, orig_model, routed_model, status, body = send_request(temp_payload)
+        check("status is 200", status == 200)
+        check("route is passthrough", route == "passthrough")
+        check("body from upstream", "Upstream response" in body)
+        print()
+
+        # =========================================================
+        # Test 6: No-route header -> NOT routed
+        # =========================================================
+        print("=" * 60)
+        print("Test 6: x-stack-intercept-no-route header -> NOT routed")
+        simple_payload = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Say hello"}],
+            "temperature": 0,
+            "stream": False,
+        }
+        hit, route, orig_model, routed_model, status, body = send_request(
+            simple_payload, extra_headers={"x-stack-intercept-no-route": "true"}
+        )
+        check("status is 200", status == 200)
+        check("route is passthrough", route == "passthrough")
+        check("body from upstream", "Upstream response" in body)
+        print()
+
+        # =========================================================
+        # Test 7: Routing disabled by default
+        # =========================================================
+        print("=" * 60)
+        print("Test 7: Routing disabled (default) -> all passthrough")
+        # Restart proxy without ALLOW_MODEL_REWRITE
+        proxy.terminate()
+        proxy.wait(timeout=5)
+        upstream_mock.reset()
+        fallback_mock.reset()
+
+        proxy = start_proxy("false")
+        if not wait_for(PROXY_URL):
+            print("FAILED: Proxy did not start")
+            sys.exit(1)
+
+        no_route_payload = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello world"}],
+            "temperature": 0,
+            "stream": False,
+        }
+        hit, route, orig_model, routed_model, status, body = send_request(no_route_payload)
+        check("status is 200", status == 200)
+        check("route is passthrough", route == "passthrough")
+        check("body from upstream", "Upstream response" in body)
+        check("upstream received request", upstream_mock.request_count == 1)
+        check("fallback received 0 requests", fallback_mock.request_count == 0)
+        print()
+
+        # =========================================================
+        # Summary
+        # =========================================================
         print("=" * 60)
         total = PASS + FAIL
         print(f"Results: {PASS}/{total} passed", "ALL PASSED" if FAIL == 0 else f"{FAIL} FAILURES")
@@ -182,7 +374,8 @@ def main():
     finally:
         proxy.terminate()
         proxy.wait(timeout=5)
-        mock.shutdown()
+        upstream_mock.shutdown()
+        fallback_mock.shutdown()
 
 
 if __name__ == "__main__":

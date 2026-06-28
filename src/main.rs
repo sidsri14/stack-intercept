@@ -10,6 +10,7 @@ use axum::{
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, State},
     http::{StatusCode, HeaderMap, Response},
+    http::response::Builder as ResponseBuilder,
     Json,
 };
 use futures_util::StreamExt;
@@ -40,6 +41,7 @@ fn build_context_key(
     payload: &serde_json::Value,
     tenant_id: &Option<String>,
     upstream_base_url: &str,
+    is_routed: bool,
 ) -> String {
     use sha2::{Sha256, Digest};
     let mut hasher = Sha256::new();
@@ -61,6 +63,8 @@ fn build_context_key(
     hasher.update(upstream_base_url.as_bytes());
 
     if let Some(t) = tenant_id { hasher.update(t.as_bytes()); }
+    // Include routing status so routed/unrouted contexts don't share semantic buckets
+    if is_routed { hasher.update(b"routed"); }
     if let Some(tools) = payload["tools"].as_array() {
         if !tools.is_empty() { hasher.update(canonical_json(&serde_json::Value::Array(tools.clone())).as_bytes()); }
     }
@@ -116,8 +120,26 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+fn as_bearer(key: &str) -> String {
+    if key.starts_with("Bearer ") { key.to_string() }
+    else { format!("Bearer {}", key) }
+}
+
 fn compute_vector_dot(v1: &[f32], v2: &[f32]) -> f32 {
     v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum()
+}
+
+/// Add transparent route headers to a response builder.
+fn with_route_headers(
+    builder: ResponseBuilder,
+    route_label: &str,
+    original_model: &str,
+    routed_model: &str,
+) -> ResponseBuilder {
+    builder
+        .header("x-stack-intercept-route", route_label)
+        .header("x-stack-intercept-original-model", original_model)
+        .header("x-stack-intercept-routed-model", routed_model)
 }
 
 async fn handle_intercept(
@@ -145,8 +167,33 @@ async fn handle_intercept(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let cache_key_hash = cache_key_hash(&payload, tenant_id.clone(), &state.config.upstream_base_url);
-    let context_key = build_context_key(&payload, &tenant_id, &state.config.upstream_base_url);
+    // Check x-stack-intercept-no-route header (allows per-request opt-out)
+    let no_route = headers.get("x-stack-intercept-no-route")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    // Evaluate routing BEFORE cache lookup so the cache key is namespace-aware
+    let route = evaluate_routing(
+        &payload,
+        &state.config.upstream_base_url,
+        &state.config.fallback_base_url,
+        state.config.allow_model_rewrite,
+        no_route,
+    );
+
+    let route_label = if route.needs_fallback_key { "fallback" } else { "passthrough" };
+    let routed_model = &route.final_model;
+
+    // Build routing namespace for cache key isolation
+    let routing_namespace = if route.needs_fallback_key {
+        Some(format!("route:{}:{}", route.final_url, route.final_model))
+    } else {
+        None
+    };
+
+    let cache_key_hash = cache_key_hash(&payload, tenant_id.clone(), &state.config.upstream_base_url, routing_namespace.as_deref());
+    let context_key = build_context_key(&payload, &tenant_id, &state.config.upstream_base_url, route.needs_fallback_key);
 
     // 1. Exact cache lookup (O(1) via HashMap)
     if state.config.is_cache_enabled() && !has_no_store {
@@ -159,14 +206,20 @@ async fn handle_intercept(
                     let stream = futures_util::stream::once(async move {
                         Ok::<_, std::io::Error>(Bytes::from(cached))
                     });
-                    return Response::builder()
+                    return with_route_headers(
+                        Response::builder(),
+                        route_label, &requested_model, routed_model,
+                    )
                         .header("content-type", "text/event-stream")
                         .header("x-stack-intercept", "hit")
                         .body(Body::from_stream(stream))
                         .unwrap()
                         .into_response();
                 } else {
-                    return Response::builder()
+                    return with_route_headers(
+                        Response::builder(),
+                        route_label, &requested_model, routed_model,
+                    )
                         .header("content-type", "application/json")
                         .header("x-stack-intercept", "hit")
                         .body(Body::from(cached))
@@ -216,14 +269,20 @@ async fn handle_intercept(
                             let stream = futures_util::stream::once(async move {
                                 Ok::<_, std::io::Error>(Bytes::from(cached))
                             });
-                            return Response::builder()
+                            return with_route_headers(
+                                Response::builder(),
+                                route_label, &requested_model, routed_model,
+                            )
                                 .header("content-type", "text/event-stream")
                                 .header("x-stack-intercept", "hit")
                                 .body(Body::from_stream(stream))
                                 .unwrap()
                                 .into_response();
                         } else {
-                            return Response::builder()
+                            return with_route_headers(
+                                Response::builder(),
+                                route_label, &requested_model, routed_model,
+                            )
                                 .header("content-type", "application/json")
                                 .header("x-stack-intercept", "hit")
                                 .body(Body::from(cached))
@@ -236,14 +295,7 @@ async fn handle_intercept(
         }
     }
 
-    // 4. Cache miss — evaluate routing and forward
-    let route = evaluate_routing(
-        &payload,
-        &state.config.upstream_base_url,
-        &state.config.fallback_base_url,
-        state.config.allow_model_rewrite,
-    );
-
+    // 4. Cache miss — forward using the route decision
     // Clone and inject the routed model into the outbound payload
     let mut modified_payload = payload.clone();
     if modified_payload["model"].as_str() != Some(&route.final_model) {
@@ -254,7 +306,10 @@ async fn handle_intercept(
 
     // Pick the right auth key for the destination
     let final_auth = if route.needs_fallback_key {
-        state.config.fallback_api_key.clone().unwrap_or_else(|| orig_auth.to_string())
+        match &state.config.fallback_api_key {
+            Some(k) => as_bearer(k),
+            None => orig_auth.to_string(),
+        }
     } else {
         orig_auth.to_string()
     };
@@ -277,28 +332,18 @@ async fn handle_intercept(
                 let cache_key_hash_clone = cache_key_hash.clone();
                 let context_key_clone = context_key.clone();
 
-                let request_model_clone = requested_model.clone();
-                let needs_model_mask = route.needs_fallback_key;
-
                 let raw_byte_accumulator = Arc::new(std::sync::Mutex::new(Vec::new()));
                 let accumulator_clone = Arc::clone(&raw_byte_accumulator);
 
-                // Forward chunks, rewriting model name for client SDK compatibility
+                // Forward chunks transparently — no model-name masking.
+                // Route headers inform the client of the actual provider.
                 let stream = res.bytes_stream().map(move |chunk_result| {
                     match chunk_result {
                         Ok(bytes) => {
-                            // Rewrite the routed model name to the originally requested model
-                            // so strict client SDKs (LangChain, etc.) don't reject the stream
-                            let chunk = if needs_model_mask {
-                                let s = String::from_utf8_lossy(&bytes).to_string();
-                                Bytes::from(s.replace("deepseek-chat", &request_model_clone))
-                            } else {
-                                bytes
-                            };
                             if let Ok(mut buf) = raw_byte_accumulator.lock() {
-                                buf.extend_from_slice(&chunk);
+                                buf.extend_from_slice(&bytes);
                             }
-                            Ok(chunk)
+                            Ok(bytes)
                         },
                         Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
                     }
@@ -331,7 +376,10 @@ async fn handle_intercept(
                     Ok::<_, std::io::Error>(Bytes::new())
                 }));
 
-                return Response::builder()
+                return with_route_headers(
+                    Response::builder(),
+                    route_label, &requested_model, routed_model,
+                )
                     .status(status)
                     .header("content-type", "text/event-stream")
                     .header("cache-control", "no-store")
@@ -365,7 +413,15 @@ async fn handle_intercept(
                 }
             }
 
-            (status, res_str).into_response()
+            with_route_headers(
+                Response::builder(),
+                route_label, &requested_model, routed_model,
+            )
+                .status(status)
+                .header("x-stack-intercept", "miss")
+                .body(Body::from(res_str))
+                .unwrap()
+                .into_response()
         }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Upstream Timeout").into_response(),
     }

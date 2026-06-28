@@ -57,7 +57,9 @@ fn extract_hostname(upstream_base_url: &str) -> String {
 
 /// Build a deterministic SHA256 hash of the full canonical payload for exact cache lookup.
 /// Returns None if the request is not cache-eligible.
-pub fn cache_key_hash(payload: &Value, tenant_id: Option<String>, upstream_base_url: &str) -> Option<String> {
+/// `routing_namespace` distinguishes routed vs passthrough responses (preventing
+/// cross-contamination between different routing decisions for the same payload).
+pub fn cache_key_hash(payload: &Value, tenant_id: Option<String>, upstream_base_url: &str, routing_namespace: Option<&str>) -> Option<String> {
     if !is_eligible(payload) { return None; }
 
     let mut hasher = Sha256::new();
@@ -67,6 +69,9 @@ pub fn cache_key_hash(payload: &Value, tenant_id: Option<String>, upstream_base_
 
     // Tenant
     if let Some(t) = tenant_id { hasher.update(t.as_bytes()); }
+
+    // Routing namespace — prevents cache cross-contamination
+    if let Some(ns) = routing_namespace { hasher.update(ns.as_bytes()); }
 
     // Canonical full payload JSON (recursively sorted keys for determinism)
     hasher.update(canonical_json(payload).as_bytes());

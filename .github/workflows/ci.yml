@@ -33,3 +33,5 @@ jobs:
       - run: cargo build
       - name: Mock upstream integration tests
         run: python test_mock_upstream.py
+      - name: Routing integration tests
+        run: python test_routing.py
