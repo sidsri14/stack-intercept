@@ -130,16 +130,18 @@ def median(values):
 
 
 def benchmark_scenario(name, payload_factory, n=N_ITERATIONS, startup_fn=None):
-    """Run a scenario N times and return (name, median_latency_ms)."""
+    """Run a scenario N times and return (name, median_latency_ms, hit, route)."""
     latencies = []
+    last_route = ""
     for _ in range(n):
         if startup_fn:
             startup_fn()
             if not wait_for(PROXY_URL):
-                return name, -1, ""
+                return name, -1, "", ""
         lat, hit, route = send_request(payload_factory())
         latencies.append(lat)
-    return name, median(latencies), hit
+        last_route = route
+    return name, median(latencies), hit, last_route
 
 
 def main():
@@ -189,7 +191,7 @@ def main():
             "stream": False,
         }
 
-    name, lat, hit = benchmark_scenario("Cold miss (no cache)", cold_factory)
+    name, lat, hit, _ = benchmark_scenario("Cold miss (no cache)", cold_factory)
     results.append((name, lat, hit))
     proxy.terminate()
     proxy.wait(timeout=5)
@@ -209,7 +211,7 @@ def main():
     def cache_factory():
         return cache_payload
 
-    name, lat, hit = benchmark_scenario("Exact cache hit", cache_factory)
+    name, lat, hit, _ = benchmark_scenario("Exact cache hit", cache_factory)
     results.append((name, lat, hit))
     proxy.terminate()
     proxy.wait(timeout=5)
@@ -226,7 +228,7 @@ def main():
     # First request to populate cache. Uses the regular mock (stream is just
     # a flag — the proxy caches raw bytes regardless of content type).
     send_request(stream_payload)
-    name, lat, hit = benchmark_scenario("Streaming exact cache hit", lambda: stream_payload)
+    name, lat, hit, _ = benchmark_scenario("Streaming exact cache hit", lambda: stream_payload)
     results.append((name, lat, hit))
     proxy.terminate()
     proxy.wait(timeout=5)
@@ -294,7 +296,7 @@ def main():
         "stream": False,
     }
 
-    name, lat, hit = benchmark_scenario(
+    name, lat, hit, route = benchmark_scenario(
         "Routed fallback (gpt-4o -> deepseek-chat)",
         lambda: routed_payload,
         startup_fn=fallback_startup,
@@ -302,7 +304,7 @@ def main():
     results.append((name, lat, hit))
     proxy.terminate()
     proxy.wait(timeout=5)
-    print(f"  {name}: {lat:.1f} ms  (x-stack-intercept: {hit}, route: {hit})")
+    print(f"  {name}: {lat:.1f} ms  (x-stack-intercept: {hit}, route: {route})")
     print()
 
     # ---- Results table ----
