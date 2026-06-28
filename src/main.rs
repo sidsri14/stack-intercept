@@ -14,7 +14,6 @@ use axum::{
 use futures_util::StreamExt;
 use futures_util::stream;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use crate::cache::{ExactCache, cache_key_hash, is_eligible};
@@ -23,11 +22,12 @@ use crate::embeddings::LocalPredictor;
 
 const ALIGNMENT_BAR: f32 = 0.93;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 struct CacheItem {
+    #[allow(dead_code)]
     prompt: String,
     vector: Vec<f32>,
-    completion_response: String,
+    completion_response: Vec<u8>,
     context_key: String,
 }
 
@@ -268,8 +268,6 @@ async fn handle_intercept(
                 let stream = stream.chain(stream::once(async move {
                     let final_bytes = accumulator_clone.lock().unwrap().clone();
                     if !final_bytes.is_empty() && is_success {
-                        let final_body = String::from_utf8_lossy(&final_bytes).to_string();
-
                         if is_cache_eligible {
                             if let Some(ref key_hash) = cache_key_hash_clone {
                                 state_clone.exact_cache.write().unwrap().insert(key_hash.clone(), final_bytes.clone());
@@ -282,7 +280,7 @@ async fn handle_intercept(
                                 writer.push(CacheItem {
                                     prompt: prompt_clone.clone(),
                                     vector: vector.clone(),
-                                    completion_response: final_body,
+                                    completion_response: final_bytes.clone(),
                                     context_key: context_key_clone,
                                 });
                                 println!("Stream cached via semantic coordinates.");
@@ -317,7 +315,7 @@ async fn handle_intercept(
                         state.index.write().unwrap().push(CacheItem {
                             prompt: prompt.to_string(),
                             vector: target_vec.clone(),
-                            completion_response: res_str.clone(),
+                            completion_response: bytes.to_vec(),
                             context_key: context_key.clone(),
                         });
                     }

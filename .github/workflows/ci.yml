@@ -7,6 +7,16 @@ on:
     branches: [master]
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -14,3 +24,12 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo check
       - run: cargo build
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo build
+      - name: Mock upstream integration tests
+        run: python test_mock_upstream.py

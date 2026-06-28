@@ -16,6 +16,34 @@ pub struct ExactCache {
     default_ttl: Duration,
 }
 
+/// Recursively sort JSON object keys for deterministic serialization.
+fn sort_json_keys(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            // Collect all entries, sort by key, rebuild the map
+            let mut sorted: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            for (_, v) in &mut sorted {
+                sort_json_keys(v);
+            }
+            *map = sorted.into_iter().collect();
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                sort_json_keys(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Serialize to canonical (deterministic, key-sorted) JSON.
+pub fn canonical_json(value: &Value) -> String {
+    let mut cloned = value.clone();
+    sort_json_keys(&mut cloned);
+    serde_json::to_string(&cloned).unwrap_or_default()
+}
+
 /// Extract the hostname from an upstream base URL.
 /// e.g. "https://api.deepseek.com" -> "api.deepseek.com"
 fn extract_hostname(upstream_base_url: &str) -> String {
@@ -40,8 +68,8 @@ pub fn cache_key_hash(payload: &Value, tenant_id: Option<String>, upstream_base_
     // Tenant
     if let Some(t) = tenant_id { hasher.update(t.as_bytes()); }
 
-    // Canonical full payload JSON (sorted keys)
-    hasher.update(serde_json::to_string(payload).unwrap_or_default().as_bytes());
+    // Canonical full payload JSON (recursively sorted keys for determinism)
+    hasher.update(canonical_json(payload).as_bytes());
 
     Some(format!("{:x}", hasher.finalize()))
 }
@@ -89,8 +117,11 @@ impl ExactCache {
             if let Some(k) = expired_key {
                 self.entries.remove(&k);
             } else {
-                // Remove any entry (arbitrary — HashMap iteration order is unstable)
-                if let Some(k) = self.entries.keys().next().cloned() {
+                // Evict the entry with the oldest created_at (FIFO eviction)
+                let oldest = self.entries.iter()
+                    .min_by(|(_, a), (_, b)| a.created_at.cmp(&b.created_at))
+                    .map(|(k, _)| k.clone());
+                if let Some(k) = oldest {
                     self.entries.remove(&k);
                 }
             }
