@@ -4,7 +4,7 @@ pub mod embeddings;
 pub mod router;
 
 use crate::cache::{cache_key_hash, canonical_json, is_eligible, CacheItem, ExactCache};
-use crate::cache::{evict_bucket, evict_global};
+use crate::cache::{evict_bucket, evict_global, load_snapshot};
 use crate::config::ProxyConfig;
 use crate::embeddings::LocalPredictor;
 use crate::router::evaluate_routing;
@@ -22,7 +22,7 @@ use futures_util::stream;
 use futures_util::StreamExt;
 use reqwest::Client;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 const ALIGNMENT_BAR: f32 = 0.93;
 
@@ -90,6 +90,7 @@ struct AppState {
     exact_cache: RwLock<ExactCache>,
     config: ProxyConfig,
     client: Client,
+    last_persist: Mutex<std::time::Instant>,
 }
 
 #[tokio::main]
@@ -115,7 +116,77 @@ async fn main() {
         exact_cache: RwLock::new(ExactCache::new(20000, 3600)),
         config,
         client: Client::new(),
+        last_persist: Mutex::new(std::time::Instant::now()),
     });
+
+    // Restore cache from disk snapshot on startup
+    if !shared_state.config.disable_persistence {
+        if let Some(ref path) = shared_state.config.cache_path {
+            match load_snapshot(path) {
+                Ok(snapshot) => {
+                    // Restore exact cache
+                    let exact_entries: Vec<_> = snapshot
+                        .exact_entries
+                        .into_iter()
+                        .map(|e| (e.key, e.response_body, e.created_at_epoch, e.ttl_secs))
+                        .collect();
+                    shared_state
+                        .exact_cache
+                        .write()
+                        .unwrap()
+                        .restore_from_snapshot(exact_entries);
+                    println!(
+                        "Exact cache restored: {} entries",
+                        shared_state.exact_cache.read().unwrap().snapshot_entries().len()
+                    );
+                    // Restore semantic index
+                    let mut semantic_count = 0usize;
+                    for item in snapshot.semantic_entries {
+                        let epoch_diff = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .and_then(|d| {
+                                if d.as_secs() >= item.created_at_epoch {
+                                    Some(std::time::Duration::from_secs(
+                                        d.as_secs() - item.created_at_epoch,
+                                    ))
+                                } else {
+                                    None
+                                }
+                            });
+                        let created_at = match epoch_diff {
+                            Some(diff) => std::time::Instant::now() - diff,
+                            None => {
+                                // epoch in the future — don't add
+                                continue;
+                            }
+                        };
+                        let ttl = std::time::Duration::from_secs(item.ttl_secs);
+                        if created_at.elapsed() >= ttl {
+                            continue; // expired
+                        }
+                        let cache_item = CacheItem {
+                            prompt: item.prompt,
+                            vector: item.vector,
+                            completion_response: item.completion_response,
+                            created_at,
+                            ttl,
+                        };
+                        let mut bucket =
+                            shared_state.index.entry(item.context_key).or_default();
+                        if bucket.len() < shared_state.config.semantic_max_bucket_items {
+                            bucket.push(cache_item);
+                            semantic_count += 1;
+                        }
+                    }
+                    println!("Semantic cache restored: {} entries", semantic_count);
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to load cache snapshot: {}", e);
+                }
+            }
+        }
+    }
 
     let app = Router::new()
         .route("/v1/chat/completions", post(handle_intercept))
@@ -151,6 +222,90 @@ fn with_route_headers(
         .header("x-stack-intercept-route", route_label)
         .header("x-stack-intercept-original-model", original_model)
         .header("x-stack-intercept-routed-model", routed_model)
+}
+
+/// Persist cache state to disk with debounce (at most once per second).
+fn persist_after_insert(state: &AppState) {
+    if state.config.disable_persistence {
+        return;
+    }
+    let cache_path = match &state.config.cache_path {
+        Some(p) => p.clone(),
+        None => return,
+    };
+    // Debounce: at most one write per second
+    let mut last = state.last_persist.lock().unwrap();
+    if last.elapsed() < std::time::Duration::from_secs(1) {
+        return;
+    }
+    *last = std::time::Instant::now();
+    drop(last);
+    // Collect data synchronously (fast — just memory reads)
+    let exact_entries = state
+        .exact_cache
+        .read()
+        .map(|c| c.snapshot_entries())
+        .unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Key, prompt, vector, body, epoch, ttl_secs
+    type SemEntry = (String, String, Vec<f32>, Vec<u8>, u64, u64);
+    let mut semantic_entries: Vec<SemEntry> = Vec::new();
+    for entry in state.index.iter() {
+        let ctx = entry.key().clone();
+        for item in entry.value().iter() {
+            let elapsed = item.created_at.elapsed().as_secs();
+            let epoch = now.saturating_sub(elapsed);
+            semantic_entries.push((
+                ctx.clone(),
+                item.prompt.clone(),
+                item.vector.clone(),
+                item.completion_response.clone(),
+                epoch,
+                item.ttl.as_secs(),
+            ));
+        }
+    }
+    // Spawn file I/O on blocking thread pool
+    tokio::task::spawn_blocking(move || {
+        let exact: Vec<_> = exact_entries
+            .into_iter()
+            .map(|(key, body, epoch, ttl)| crate::cache::SnapshotEntry {
+                key,
+                response_body: body,
+                created_at_epoch: epoch,
+                ttl_secs: ttl,
+            })
+            .collect();
+        let semantic: Vec<_> = semantic_entries
+            .into_iter()
+            .map(|(ctx, prompt, vector, body, epoch, ttl)| {
+                crate::cache::SnapshotItem {
+                    context_key: ctx,
+                    prompt,
+                    vector,
+                    completion_response: body,
+                    created_at_epoch: epoch,
+                    ttl_secs: ttl,
+                }
+            })
+            .collect();
+        let snapshot = crate::cache::Snapshot {
+            exact_entries: exact,
+            semantic_entries: semantic,
+        };
+        match rmp_serde::to_vec(&snapshot) {
+            Ok(bytes) => {
+                let tmp_path = format!("{}.tmp", &cache_path);
+                if std::fs::write(&tmp_path, &bytes).is_ok() {
+                    let _ = std::fs::rename(&tmp_path, &cache_path);
+                }
+            }
+            Err(e) => eprintln!("Snapshot serialization failed: {}", e),
+        }
+    });
 }
 
 async fn handle_intercept(
@@ -413,7 +568,13 @@ async fn handle_intercept(
                             }
                             Ok(bytes)
                         }
-                        Err(e) => Err(std::io::Error::other(e)),
+                        Err(e) => {
+                            let error_frame = format!(
+                                "data: {}\n\ndata: [DONE]\n",
+                                serde_json::json!({"error": {"message": format!("Upstream stream error: {}", e)}})
+                            );
+                            Ok(Bytes::from(error_frame))
+                        }
                     });
 
                 // When stream ends, flush accumulated bytes to cache
@@ -428,6 +589,7 @@ async fn handle_intercept(
                                     .unwrap()
                                     .insert(key_hash.clone(), final_bytes.clone());
                                 println!("Stream cached (exact).");
+                                persist_after_insert(&state_clone);
                             }
                         }
                         if semantic_eligible {
@@ -457,6 +619,7 @@ async fn handle_intercept(
                                         state_clone.config.semantic_max_items,
                                     );
                                 }
+                                persist_after_insert(&state_clone);
                                 println!("Stream cached via semantic coordinates.");
                             }
                         }
@@ -492,6 +655,7 @@ async fn handle_intercept(
                             .unwrap()
                             .insert(key_hash.clone(), bytes.to_vec());
                     }
+                    persist_after_insert(&state);
                 }
                 if semantic_eligible {
                     if let Some(ref target_vec) = target_coordinates {
@@ -510,6 +674,7 @@ async fn handle_intercept(
                         if state.index.len() > state.config.semantic_max_items {
                             evict_global(&state.index, state.config.semantic_max_items);
                         }
+                        persist_after_insert(&state);
                     }
                 }
             }
@@ -526,16 +691,28 @@ async fn handle_intercept(
             .unwrap()
             .into_response()
         }
-        Err(_) => with_route_headers(
-            Response::builder(),
-            route_label,
-            &requested_model,
-            routed_model,
-        )
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .header("x-stack-intercept", "error")
-        .body(Body::from("Upstream Timeout"))
-        .unwrap()
-        .into_response(),
+        Err(_) => {
+            let body: Body = if is_streaming {
+                Body::from(
+                    format!(
+                        "data: {}\n\ndata: [DONE]\n",
+                        serde_json::json!({"error": {"message": "Upstream Timeout"}})
+                    ),
+                )
+            } else {
+                Body::from("Upstream Timeout")
+            };
+            with_route_headers(
+                Response::builder(),
+                route_label,
+                &requested_model,
+                routed_model,
+            )
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .header("x-stack-intercept", "error")
+            .body(body)
+            .unwrap()
+            .into_response()
+        },
     }
 }

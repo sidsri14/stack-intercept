@@ -255,4 +255,144 @@ impl ExactCache {
             },
         );
     }
+
+    /// Export entries for snapshot serialization (key, body, epoch_secs, ttl_secs).
+    pub fn snapshot_entries(&self) -> Vec<(String, Vec<u8>, u64, u64)> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.entries
+            .iter()
+            .map(|(k, e)| {
+                let elapsed = e.created_at.elapsed().as_secs();
+                let epoch = now.saturating_sub(elapsed);
+                (k.clone(), e.response_body.clone(), epoch, e.ttl.as_secs())
+            })
+            .collect()
+    }
+
+    /// Restore entries from a snapshot.
+    pub fn restore_from_snapshot(
+        &mut self,
+        entries: Vec<(String, Vec<u8>, u64, u64)>,
+    ) {
+        let snapshot_ttl = self.default_ttl;
+        for (key, body, epoch_secs, ttl_secs) in entries {
+            if self.entries.len() >= self.max_entries {
+                break;
+            }
+            let ttl = Duration::from_secs(ttl_secs);
+            let created_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|d| {
+                    let secs = d.as_secs();
+                    if secs >= epoch_secs {
+                        Some(Instant::now() - Duration::from_secs(secs - epoch_secs))
+                    } else {
+                        None // epoch in the future, skip
+                    }
+                })
+                .unwrap_or_else(Instant::now);
+            // Skip expired entries
+            if created_at.elapsed() >= ttl && ttl != snapshot_ttl {
+                continue;
+            }
+            self.entries.insert(
+                key,
+                CachedEntry {
+                    response_body: body,
+                    created_at,
+                    ttl,
+                },
+            );
+        }
+    }
+}
+
+// ── Snapshot types for disk persistence ──
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SnapshotEntry {
+    pub key: String,
+    pub response_body: Vec<u8>,
+    pub created_at_epoch: u64,
+    pub ttl_secs: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SnapshotItem {
+    pub context_key: String,
+    pub prompt: String,
+    pub vector: Vec<f32>,
+    pub completion_response: Vec<u8>,
+    pub created_at_epoch: u64,
+    pub ttl_secs: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    pub exact_entries: Vec<SnapshotEntry>,
+    pub semantic_entries: Vec<SnapshotItem>,
+}
+
+/// Save the full cache state to disk atomically.
+/// Writes to `path.tmp`, then renames to `path` (atomic on most filesystems).
+pub fn save_snapshot(
+    path: &str,
+    exact_cache: &ExactCache,
+    semantic_index: &DashMap<String, Vec<CacheItem>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let exact_entries: Vec<SnapshotEntry> = exact_cache
+        .snapshot_entries()
+        .into_iter()
+        .map(|(key, body, epoch, ttl)| SnapshotEntry {
+            key,
+            response_body: body,
+            created_at_epoch: epoch,
+            ttl_secs: ttl,
+        })
+        .collect();
+
+    let mut semantic_entries = Vec::new();
+    for entry in semantic_index.iter() {
+        let ctx = entry.key().clone();
+        for item in entry.value().iter() {
+            let elapsed = item.created_at.elapsed().as_secs();
+            let epoch = now.saturating_sub(elapsed);
+            semantic_entries.push(SnapshotItem {
+                context_key: ctx.clone(),
+                prompt: item.prompt.clone(),
+                vector: item.vector.clone(),
+                completion_response: item.completion_response.clone(),
+                created_at_epoch: epoch,
+                ttl_secs: item.ttl.as_secs(),
+            });
+        }
+    }
+
+    let snapshot = Snapshot {
+        exact_entries,
+        semantic_entries,
+    };
+
+    let tmp_path = format!("{}.tmp", path);
+    let bytes = rmp_serde::to_vec(&snapshot)?;
+    std::fs::write(&tmp_path, &bytes)?;
+    std::fs::rename(&tmp_path, path)?;
+
+    Ok(())
+}
+
+/// Load cache state from a disk snapshot.
+pub fn load_snapshot(path: &str) -> Result<Snapshot, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    let snapshot: Snapshot = rmp_serde::from_slice(&bytes)?;
+    Ok(snapshot)
 }

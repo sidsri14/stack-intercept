@@ -19,6 +19,8 @@ pub struct ProxyConfig {
     pub semantic_max_items: usize,
     pub semantic_max_bucket_items: usize,
     pub semantic_ttl_secs: u64,
+    pub cache_path: Option<String>,
+    pub disable_persistence: bool,
 }
 
 impl ProxyConfig {
@@ -64,6 +66,12 @@ impl ProxyConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(3600);
 
+        let cache_path = env::var("STACK_INTERCEPT_CACHE_PATH").ok();
+
+        let disable_persistence = env::var("STACK_INTERCEPT_DISABLE_PERSISTENCE")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+
         Self {
             cache_mode,
             tenant_id_header,
@@ -75,6 +83,8 @@ impl ProxyConfig {
             semantic_max_items,
             semantic_max_bucket_items,
             semantic_ttl_secs,
+            cache_path,
+            disable_persistence,
         }
     }
 
