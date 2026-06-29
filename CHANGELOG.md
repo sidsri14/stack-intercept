@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.2.0] - 2026-06-29
+
+### Added
+- Disk persistence for both exact and semantic caches (rmp-serde MessagePack)
+  - Configurable via `STACK_INTERCEPT_CACHE_PATH`
+  - Opt-out via `STACK_INTERCEPT_DISABLE_PERSISTENCE`
+  - Debounced to at most one write per second
+  - Graceful shutdown (Ctrl+C) flushes remaining data
+- SSE-formatted error frames for upstream stream failures
+  - `content-type: text/event-stream` set on streaming error responses
+  - Properly terminated `[DONE]\n\n` per SSE spec
+
+### Changed
+- Semantic cache index upgraded from `RwLock<HashMap>` to `DashMap` for
+  concurrent bucket-level access without global lock contention
+- Cache items now carry per-entry TTL (configurable via
+  `STACK_INTERCEPT_SEMANTIC_TTL_SECS`, default 3600s)
+
+### Fixed
+- Global semantic eviction now counts total entries across all context
+  buckets, not the number of buckets (`STACK_INTERCEPT_SEMANTIC_MAX_ITEMS`
+  now correctly caps at 10,000 total entries)
+- Bucket eviction off-by-one: push now happens before eviction, preventing
+  perpetual max+1 bucket occupancy
+
+### Config
+- `STACK_INTERCEPT_CACHE_PATH` — path to cache snapshot file
+- `STACK_INTERCEPT_DISABLE_PERSISTENCE` — opt-out of disk writes
+- `STACK_INTERCEPT_SEMANTIC_MAX_ITEMS` — total semantic entry cap (default 10000)
+- `STACK_INTERCEPT_SEMANTIC_MAX_BUCKET_ITEMS` — per-bucket cap (default 256)
+- `STACK_INTERCEPT_SEMANTIC_TTL_SECS` — per-entry TTL (default 3600)
+
 ## [0.1.1] - 2026-06-29
 
 ### Added
