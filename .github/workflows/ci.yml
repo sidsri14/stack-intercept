@@ -40,6 +40,8 @@ jobs:
         run: python test_mock_upstream.py
       - name: Routing integration tests
         run: python test_routing.py
+      - name: Persistence and SSE tests
+        run: python test_persistence_eviction_sse.py
 
   package:
     needs: [check, integration]
@@ -55,13 +57,18 @@ jobs:
           mkdir -p dist/stack-intercept
           cp target/release/stack-intercept dist/stack-intercept/
           cp .env.example README.md download_model.sh dist/stack-intercept/
+          cp -r docs dist/stack-intercept/
       - name: Create tarball
-        run: tar czf stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz -C dist stack-intercept
+        run: |
+          VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          tar czf "stack-intercept-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" -C dist stack-intercept
       - name: Generate SHA256 checksum
-        run: sha256sum stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz > checksums.txt
+        run: |
+          VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          sha256sum "stack-intercept-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" > checksums.txt
       - uses: actions/upload-artifact@v4
         with:
           name: stack-intercept-linux-x86_64
           path: |
-            stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+            stack-intercept-*-x86_64-unknown-linux-gnu.tar.gz
             checksums.txt

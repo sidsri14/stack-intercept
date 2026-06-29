@@ -21,6 +21,7 @@ jobs:
           mkdir -p dist/stack-intercept
           cp target/release/stack-intercept dist/stack-intercept/
           cp .env.example README.md download_model.sh dist/stack-intercept/
+          cp -r docs dist/stack-intercept/
       - name: Create tarball and checksum
         run: |
           VERSION="${GITHUB_REF_NAME#v}"

@@ -185,6 +185,8 @@ cargo run
                                   └───────────┘
 ```
 
+For self-hosted production setup, see [docs/deployment.md](docs/deployment.md).
+
 ## Build & Run
 
 ```bash

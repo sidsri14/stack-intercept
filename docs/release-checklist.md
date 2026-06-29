@@ -56,7 +56,7 @@ strip target/x86_64-pc-windows-msvc/release/stack-intercept.exe
 
 ## Package
 
-- [ ] Binary + `.env.example` + `download_model.sh` → `.tar.gz` / `.zip`
+- [ ] Binary + `.env.example` + `download_model.sh` + `docs/` → `.tar.gz` / `.zip`
 - [ ] Verify binary starts: `./stack-intercept` prints "online at http://127.0.0.1:8080"
 - [ ] Verify `.env.example` has accurate defaults
 - [ ] Verify `README.md` quickstart works from scratch
