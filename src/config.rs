@@ -16,6 +16,9 @@ pub struct ProxyConfig {
     pub upstream_base_url: String,
     pub fallback_base_url: String,
     pub fallback_api_key: Option<String>,
+    pub semantic_max_items: usize,
+    pub semantic_max_bucket_items: usize,
+    pub semantic_ttl_secs: u64,
 }
 
 impl ProxyConfig {
@@ -46,6 +49,21 @@ impl ProxyConfig {
             .ok()
             .or_else(|| env::var("DEEPSEEK_API_KEY").ok());
 
+        let semantic_max_items = env::var("STACK_INTERCEPT_SEMANTIC_MAX_ITEMS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10000);
+
+        let semantic_max_bucket_items = env::var("STACK_INTERCEPT_SEMANTIC_MAX_BUCKET_ITEMS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256);
+
+        let semantic_ttl_secs = env::var("STACK_INTERCEPT_SEMANTIC_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600);
+
         Self {
             cache_mode,
             tenant_id_header,
@@ -54,6 +72,9 @@ impl ProxyConfig {
             upstream_base_url,
             fallback_base_url,
             fallback_api_key,
+            semantic_max_items,
+            semantic_max_bucket_items,
+            semantic_ttl_secs,
         }
     }
 

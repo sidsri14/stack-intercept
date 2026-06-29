@@ -3,7 +3,8 @@ pub mod config;
 pub mod embeddings;
 pub mod router;
 
-use crate::cache::{cache_key_hash, canonical_json, is_eligible, ExactCache};
+use crate::cache::{cache_key_hash, canonical_json, is_eligible, CacheItem, ExactCache};
+use crate::cache::{evict_bucket, evict_global};
 use crate::config::ProxyConfig;
 use crate::embeddings::LocalPredictor;
 use crate::router::evaluate_routing;
@@ -16,24 +17,15 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use dashmap::DashMap;
 use futures_util::stream;
 use futures_util::StreamExt;
 use reqwest::Client;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 const ALIGNMENT_BAR: f32 = 0.93;
 
-#[derive(Clone, Debug)]
-struct CacheItem {
-    #[allow(dead_code)]
-    prompt: String,
-    vector: Vec<f32>,
-    completion_response: Vec<u8>,
-}
-
-/// Build a deterministic context key for semantic safety gating.
 /// Hashes everything EXCEPT the final user message, so semantically similar
 /// prompts within the same conversation context can produce cache hits.
 fn build_context_key(
@@ -94,7 +86,7 @@ fn build_context_key(
 
 struct AppState {
     predictor: Option<Arc<LocalPredictor>>,
-    index: RwLock<HashMap<String, Vec<CacheItem>>>,
+    index: DashMap<String, Vec<CacheItem>>,
     exact_cache: RwLock<ExactCache>,
     config: ProxyConfig,
     client: Client,
@@ -119,7 +111,7 @@ async fn main() {
 
     let shared_state = Arc::new(AppState {
         predictor,
-        index: RwLock::new(HashMap::new()),
+        index: DashMap::new(),
         exact_cache: RwLock::new(ExactCache::new(20000, 3600)),
         config,
         client: Client::new(),
@@ -321,11 +313,10 @@ async fn handle_intercept(
         None
     };
 
-    // 3. Semantic cache scan (gated by context key, bucketed by HashMap)
+    // 3. Semantic cache scan (gated by context key, bucketed by DashMap)
     if semantic_eligible {
         if let Some(ref target_vec) = target_coordinates {
-            let storage = state.index.read().unwrap();
-            if let Some(bucket) = storage.get(&context_key) {
+            if let Some(bucket) = state.index.get(&context_key) {
                 for item in bucket.iter() {
                     let score = compute_vector_dot(target_vec, &item.vector);
                     if score >= ALIGNMENT_BAR {
@@ -441,15 +432,31 @@ async fn handle_intercept(
                         }
                         if semantic_eligible {
                             if let Some(ref vector) = vector_clone {
-                                let mut writer = state_clone.index.write().unwrap();
-                                writer
+                                let mut bucket = state_clone
+                                    .index
                                     .entry(context_key_clone)
-                                    .or_default()
-                                    .push(CacheItem {
-                                        prompt: prompt_clone.clone(),
-                                        vector: vector.clone(),
-                                        completion_response: final_bytes.clone(),
-                                    });
+                                    .or_default();
+                                let item = CacheItem {
+                                    prompt: prompt_clone.clone(),
+                                    vector: vector.clone(),
+                                    completion_response: final_bytes.clone(),
+                                    created_at: std::time::Instant::now(),
+                                    ttl: std::time::Duration::from_secs(
+                                        state_clone.config.semantic_ttl_secs,
+                                    ),
+                                };
+                                evict_bucket(
+                                    &mut bucket,
+                                    state_clone.config.semantic_max_bucket_items,
+                                );
+                                bucket.push(item);
+                                if state_clone.index.len() > state_clone.config.semantic_max_items
+                                {
+                                    evict_global(
+                                        &state_clone.index,
+                                        state_clone.config.semantic_max_items,
+                                    );
+                                }
                                 println!("Stream cached via semantic coordinates.");
                             }
                         }
@@ -488,17 +495,21 @@ async fn handle_intercept(
                 }
                 if semantic_eligible {
                     if let Some(ref target_vec) = target_coordinates {
-                        state
-                            .index
-                            .write()
-                            .unwrap()
-                            .entry(context_key.clone())
-                            .or_default()
-                            .push(CacheItem {
-                                prompt: prompt.to_string(),
-                                vector: target_vec.clone(),
-                                completion_response: bytes.to_vec(),
-                            });
+                        let item = CacheItem {
+                            prompt: prompt.to_string(),
+                            vector: target_vec.clone(),
+                            completion_response: bytes.to_vec(),
+                            created_at: std::time::Instant::now(),
+                            ttl: std::time::Duration::from_secs(
+                                state.config.semantic_ttl_secs,
+                            ),
+                        };
+                        let mut bucket = state.index.entry(context_key.clone()).or_default();
+                        evict_bucket(&mut bucket, state.config.semantic_max_bucket_items);
+                        bucket.push(item);
+                        if state.index.len() > state.config.semantic_max_items {
+                            evict_global(&state.index, state.config.semantic_max_items);
+                        }
                     }
                 }
             }

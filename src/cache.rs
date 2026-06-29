@@ -3,11 +3,105 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
+
 #[derive(Clone, Debug)]
 pub struct CachedEntry {
     pub response_body: Vec<u8>,
     pub created_at: Instant,
     pub ttl: Duration,
+}
+
+#[derive(Clone, Debug)]
+pub struct CacheItem {
+    pub prompt: String,
+    pub vector: Vec<f32>,
+    pub completion_response: Vec<u8>,
+    pub created_at: Instant,
+    pub ttl: Duration,
+}
+
+/// Evict expired entries from a semantic cache bucket, then oldest entries
+/// if the bucket still exceeds `max_bucket_items`. Returns number evicted.
+pub fn evict_bucket(bucket: &mut Vec<CacheItem>, max_bucket_items: usize) -> usize {
+    let before = bucket.len();
+    // Remove expired entries
+    bucket.retain(|item| item.created_at.elapsed() < item.ttl);
+    // Remove oldest entries until under the cap
+    while bucket.len() > max_bucket_items {
+        let oldest_idx = bucket
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.created_at.cmp(&b.created_at))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        bucket.remove(oldest_idx);
+    }
+    before.saturating_sub(bucket.len())
+}
+
+/// Scan all shards in the semantic index and evict entries if total exceeds
+/// `max_items`. Expired entries are removed first, then the oldest entries
+/// globally. Returns total number of entries evicted.
+pub fn evict_global(index: &DashMap<String, Vec<CacheItem>>, max_items: usize) -> usize {
+    if index.len() <= max_items {
+        return 0;
+    }
+
+    // First pass: remove expired entries from all buckets
+    let mut total_removed = 0usize;
+    index.iter_mut().for_each(|mut bucket| {
+        let before = bucket.len();
+        bucket.retain(|item| item.created_at.elapsed() < item.ttl);
+        total_removed += before.saturating_sub(bucket.len());
+    });
+
+    // If still over capacity, remove oldest entries globally
+    if index.len() <= max_items {
+        return total_removed;
+    }
+
+    let overage = index.len().saturating_sub(max_items);
+    let mut to_remove = Vec::new(); // (context_key, index_in_bucket)
+
+    // Collect candidate entries sorted by age across all shards
+    for entry in index.iter() {
+        let ctx = entry.key().clone();
+        for (i, item) in entry.value().iter().enumerate() {
+            to_remove.push((ctx.clone(), i, item.created_at));
+        }
+    }
+
+    // Sort by age (oldest first)
+    to_remove.sort_by(|a, b| a.2.cmp(&b.2));
+
+    // Remove the oldest entries (process newest-first to preserve indices)
+    let remove_count = overage.min(to_remove.len());
+    let to_remove_set: Vec<_> = to_remove[..remove_count]
+        .iter()
+        .map(|(ctx, idx, _)| (ctx.clone(), *idx))
+        .collect();
+
+    // Group removals by context key, sort indices descending so removal
+    // doesn't shift remaining indices
+    use std::collections::HashMap as StdHashMap;
+    let mut by_key: StdHashMap<String, Vec<usize>> = StdHashMap::new();
+    for (ctx, idx) in to_remove_set {
+        by_key.entry(ctx).or_default().push(idx);
+    }
+    for (ctx, mut indices) in by_key {
+        indices.sort_by(|a, b| b.cmp(a)); // descending
+        if let Some(mut bucket) = index.get_mut(&ctx) {
+            for idx in indices {
+                if idx < bucket.len() {
+                    bucket.remove(idx);
+                    total_removed += 1;
+                }
+            }
+        }
+    }
+
+    total_removed
 }
 
 pub struct ExactCache {

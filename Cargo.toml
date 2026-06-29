@@ -19,6 +19,7 @@ tokenizers = "0.19"
 fast-hnsw = "1.0"
 anyhow = "1.0"
 sha2 = "0.10"
+dashmap = "6"
 
 [profile.release]
 opt-level = 3
