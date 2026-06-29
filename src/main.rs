@@ -26,6 +26,11 @@ use std::sync::{Arc, Mutex, RwLock};
 
 const ALIGNMENT_BAR: f32 = 0.93;
 
+/// Count total semantic cache entries across all DashMap buckets.
+fn total_semantic_entries(index: &DashMap<String, Vec<CacheItem>>) -> usize {
+    index.iter().map(|e| e.value().len()).sum()
+}
+
 /// Hashes everything EXCEPT the final user message, so semantically similar
 /// prompts within the same conversation context can produce cache hits.
 fn build_context_key(
@@ -188,6 +193,7 @@ async fn main() {
         }
     }
 
+    let server_state = shared_state.clone();
     let app = Router::new()
         .route("/v1/chat/completions", post(handle_intercept))
         .layer(DefaultBodyLimit::max(shared_state.config.max_body_size))
@@ -195,8 +201,22 @@ async fn main() {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
     println!("StackIntercept online at http://{}", addr);
+
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            tokio::signal::ctrl_c().await.ok();
+            println!("Shutting down, flushing cache to disk...");
+            let state = server_state;
+            tokio::task::spawn_blocking(move || {
+                flush_persistence(&state);
+            })
+            .await
+            .ok();
+            println!("Cache flushed.");
+        })
+        .await
+        .unwrap();
 }
 
 fn as_bearer(key: &str) -> String {
@@ -224,23 +244,12 @@ fn with_route_headers(
         .header("x-stack-intercept-routed-model", routed_model)
 }
 
-/// Persist cache state to disk with debounce (at most once per second).
-fn persist_after_insert(state: &AppState) {
-    if state.config.disable_persistence {
-        return;
-    }
-    let cache_path = match &state.config.cache_path {
-        Some(p) => p.clone(),
-        None => return,
-    };
-    // Debounce: at most one write per second
-    let mut last = state.last_persist.lock().unwrap();
-    if last.elapsed() < std::time::Duration::from_secs(1) {
-        return;
-    }
-    *last = std::time::Instant::now();
-    drop(last);
-    // Collect data synchronously (fast — just memory reads)
+/// Collect cache data for snapshot (shared between debounced and flush paths).
+type ExactEntry = (String, Vec<u8>, u64, u64);
+type SemEntry = (String, String, Vec<f32>, Vec<u8>, u64, u64);
+fn collect_snapshot_data(
+    state: &AppState,
+) -> (Vec<ExactEntry>, Vec<SemEntry>, u64) {
     let exact_entries = state
         .exact_cache
         .read()
@@ -250,8 +259,6 @@ fn persist_after_insert(state: &AppState) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // Key, prompt, vector, body, epoch, ttl_secs
-    type SemEntry = (String, String, Vec<f32>, Vec<u8>, u64, u64);
     let mut semantic_entries: Vec<SemEntry> = Vec::new();
     for entry in state.index.iter() {
         let ctx = entry.key().clone();
@@ -268,44 +275,80 @@ fn persist_after_insert(state: &AppState) {
             ));
         }
     }
-    // Spawn file I/O on blocking thread pool
-    tokio::task::spawn_blocking(move || {
-        let exact: Vec<_> = exact_entries
-            .into_iter()
-            .map(|(key, body, epoch, ttl)| crate::cache::SnapshotEntry {
-                key,
-                response_body: body,
-                created_at_epoch: epoch,
-                ttl_secs: ttl,
-            })
-            .collect();
-        let semantic: Vec<_> = semantic_entries
-            .into_iter()
-            .map(|(ctx, prompt, vector, body, epoch, ttl)| {
-                crate::cache::SnapshotItem {
-                    context_key: ctx,
-                    prompt,
-                    vector,
-                    completion_response: body,
-                    created_at_epoch: epoch,
-                    ttl_secs: ttl,
-                }
-            })
-            .collect();
-        let snapshot = crate::cache::Snapshot {
-            exact_entries: exact,
-            semantic_entries: semantic,
-        };
-        match rmp_serde::to_vec(&snapshot) {
-            Ok(bytes) => {
-                let tmp_path = format!("{}.tmp", &cache_path);
-                if std::fs::write(&tmp_path, &bytes).is_ok() {
-                    let _ = std::fs::rename(&tmp_path, &cache_path);
-                }
+    (exact_entries, semantic_entries, now)
+}
+
+/// Serialize and write snapshot to disk (blocking — run on spawn_blocking).
+fn write_snapshot_to_disk(cache_path: &str, exact_entries: Vec<ExactEntry>, semantic_entries: Vec<SemEntry>) {
+    let exact: Vec<_> = exact_entries
+        .into_iter()
+        .map(|(key, body, epoch, ttl)| crate::cache::SnapshotEntry {
+            key,
+            response_body: body,
+            created_at_epoch: epoch,
+            ttl_secs: ttl,
+        })
+        .collect();
+    let semantic: Vec<_> = semantic_entries
+        .into_iter()
+        .map(|(ctx, prompt, vector, body, epoch, ttl)| crate::cache::SnapshotItem {
+            context_key: ctx,
+            prompt,
+            vector,
+            completion_response: body,
+            created_at_epoch: epoch,
+            ttl_secs: ttl,
+        })
+        .collect();
+    let snapshot = crate::cache::Snapshot {
+        exact_entries: exact,
+        semantic_entries: semantic,
+    };
+    match rmp_serde::to_vec(&snapshot) {
+        Ok(bytes) => {
+            let tmp_path = format!("{}.tmp", cache_path);
+            if std::fs::write(&tmp_path, &bytes).is_ok() {
+                let _ = std::fs::rename(&tmp_path, cache_path);
             }
-            Err(e) => eprintln!("Snapshot serialization failed: {}", e),
         }
+        Err(e) => eprintln!("Snapshot serialization failed: {}", e),
+    }
+}
+
+/// Persist cache state to disk with debounce (at most once per second).
+fn persist_after_insert(state: &AppState) {
+    if state.config.disable_persistence {
+        return;
+    }
+    let cache_path = match &state.config.cache_path {
+        Some(p) => p.clone(),
+        None => return,
+    };
+    // Debounce: at most one write per second
+    let mut last = state.last_persist.lock().unwrap();
+    if last.elapsed() < std::time::Duration::from_secs(1) {
+        return;
+    }
+    *last = std::time::Instant::now();
+    drop(last);
+    // Collect data synchronously, spawn blocking I/O
+    let (exact_entries, semantic_entries, _now) = collect_snapshot_data(state);
+    tokio::task::spawn_blocking(move || {
+        write_snapshot_to_disk(&cache_path, exact_entries, semantic_entries);
     });
+}
+
+/// Force a synchronous flush to disk (ignores debounce). Used on shutdown.
+fn flush_persistence(state: &AppState) {
+    if state.config.disable_persistence {
+        return;
+    }
+    let cache_path = match &state.config.cache_path {
+        Some(p) => p.clone(),
+        None => return,
+    };
+    let (exact_entries, semantic_entries, _now) = collect_snapshot_data(state);
+    write_snapshot_to_disk(&cache_path, exact_entries, semantic_entries);
 }
 
 async fn handle_intercept(
@@ -570,7 +613,7 @@ async fn handle_intercept(
                         }
                         Err(e) => {
                             let error_frame = format!(
-                                "data: {}\n\ndata: [DONE]\n",
+                                "data: {}\n\ndata: [DONE]\n\n",
                                 serde_json::json!({"error": {"message": format!("Upstream stream error: {}", e)}})
                             );
                             Ok(Bytes::from(error_frame))
@@ -607,12 +650,14 @@ async fn handle_intercept(
                                         state_clone.config.semantic_ttl_secs,
                                     ),
                                 };
+                                // Push first, then evict — avoids max+1 off-by-one
+                                bucket.push(item);
                                 evict_bucket(
                                     &mut bucket,
                                     state_clone.config.semantic_max_bucket_items,
                                 );
-                                bucket.push(item);
-                                if state_clone.index.len() > state_clone.config.semantic_max_items
+                                if total_semantic_entries(&state_clone.index)
+                                    > state_clone.config.semantic_max_items
                                 {
                                     evict_global(
                                         &state_clone.index,
@@ -669,9 +714,10 @@ async fn handle_intercept(
                             ),
                         };
                         let mut bucket = state.index.entry(context_key.clone()).or_default();
-                        evict_bucket(&mut bucket, state.config.semantic_max_bucket_items);
+                        // Push first, then evict — avoids max+1 off-by-one
                         bucket.push(item);
-                        if state.index.len() > state.config.semantic_max_items {
+                        evict_bucket(&mut bucket, state.config.semantic_max_bucket_items);
+                        if total_semantic_entries(&state.index) > state.config.semantic_max_items {
                             evict_global(&state.index, state.config.semantic_max_items);
                         }
                         persist_after_insert(&state);
@@ -695,24 +741,25 @@ async fn handle_intercept(
             let body: Body = if is_streaming {
                 Body::from(
                     format!(
-                        "data: {}\n\ndata: [DONE]\n",
+                        "data: {}\n\ndata: [DONE]\n\n",
                         serde_json::json!({"error": {"message": "Upstream Timeout"}})
                     ),
                 )
             } else {
                 Body::from("Upstream Timeout")
             };
-            with_route_headers(
+            let mut builder = with_route_headers(
                 Response::builder(),
                 route_label,
                 &requested_model,
                 routed_model,
             )
             .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .header("x-stack-intercept", "error")
-            .body(body)
-            .unwrap()
-            .into_response()
+            .header("x-stack-intercept", "error");
+            if is_streaming {
+                builder = builder.header("content-type", "text/event-stream");
+            }
+            builder.body(body).unwrap().into_response()
         },
     }
 }

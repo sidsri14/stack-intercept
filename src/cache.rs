@@ -44,10 +44,6 @@ pub fn evict_bucket(bucket: &mut Vec<CacheItem>, max_bucket_items: usize) -> usi
 /// `max_items`. Expired entries are removed first, then the oldest entries
 /// globally. Returns total number of entries evicted.
 pub fn evict_global(index: &DashMap<String, Vec<CacheItem>>, max_items: usize) -> usize {
-    if index.len() <= max_items {
-        return 0;
-    }
-
     // First pass: remove expired entries from all buckets
     let mut total_removed = 0usize;
     index.iter_mut().for_each(|mut bucket| {
@@ -56,12 +52,13 @@ pub fn evict_global(index: &DashMap<String, Vec<CacheItem>>, max_items: usize) -
         total_removed += before.saturating_sub(bucket.len());
     });
 
-    // If still over capacity, remove oldest entries globally
-    if index.len() <= max_items {
+    // Count total entries across ALL buckets (not bucket count)
+    let total_entries: usize = index.iter().map(|e| e.value().len()).sum();
+    if total_entries <= max_items {
         return total_removed;
     }
 
-    let overage = index.len().saturating_sub(max_items);
+    let overage = total_entries.saturating_sub(max_items);
     let mut to_remove = Vec::new(); // (context_key, index_in_bucket)
 
     // Collect candidate entries sorted by age across all shards
