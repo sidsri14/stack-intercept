@@ -121,9 +121,7 @@ async fn main() {
         exact_cache: RwLock::new(ExactCache::new(20000, 3600)),
         config,
         client: Client::new(),
-        last_persist: Mutex::new(
-            std::time::Instant::now() - std::time::Duration::from_secs(10),
-        ),
+        last_persist: Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)),
     });
 
     // Restore cache from disk snapshot on startup

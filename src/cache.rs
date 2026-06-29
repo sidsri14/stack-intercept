@@ -482,9 +482,9 @@ mod tests {
         let index = DashMap::new();
         // 2 expired, 1 fresh
         let bucket = vec![
-            make_item(100, 10),  // expired (100s old, 10s TTL)
-            make_item(50, 10),   // expired (50s old, 10s TTL)
-            make_item(5, 3600),  // fresh
+            make_item(100, 10), // expired (100s old, 10s TTL)
+            make_item(50, 10),  // expired (50s old, 10s TTL)
+            make_item(5, 3600), // fresh
         ];
         index.insert("ctx".to_string(), bucket);
 
@@ -537,7 +537,7 @@ mod tests {
         cache.insert("stale".to_string(), b"old".to_vec());
 
         let entries = cache.snapshot_entries(); // snapshot has 1s TTL
-        // Sleep so entry expires under its original TTL
+                                                // Sleep so entry expires under its original TTL
         std::thread::sleep(Duration::from_millis(1100));
 
         let mut restored = ExactCache::new(100, 3600); // restore with longer TTL
