@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: strip target/release/stack-intercept
+      - name: Create package directory
+        run: |
+          mkdir -p dist/stack-intercept
+          cp target/release/stack-intercept dist/stack-intercept/
+          cp .env.example README.md download_model.sh dist/stack-intercept/
+      - name: Create tarball and checksum
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          tar czf "stack-intercept-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" -C dist stack-intercept
+          sha256sum "stack-intercept-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" > checksums.txt
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            stack-intercept-*.tar.gz
+            checksums.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
