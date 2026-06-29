@@ -70,7 +70,7 @@ pub fn evict_global(index: &DashMap<String, Vec<CacheItem>>, max_items: usize) -
     }
 
     // Sort by age (oldest first)
-    to_remove.sort_by(|a, b| a.2.cmp(&b.2));
+    to_remove.sort_by_key(|item| item.2);
 
     // Remove the oldest entries (process newest-first to preserve indices)
     let remove_count = overage.min(to_remove.len());
