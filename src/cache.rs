@@ -270,10 +270,7 @@ impl ExactCache {
     }
 
     /// Restore entries from a snapshot.
-    pub fn restore_from_snapshot(
-        &mut self,
-        entries: Vec<(String, Vec<u8>, u64, u64)>,
-    ) {
+    pub fn restore_from_snapshot(&mut self, entries: Vec<(String, Vec<u8>, u64, u64)>) {
         let snapshot_ttl = self.default_ttl;
         for (key, body, epoch_secs, ttl_secs) in entries {
             if self.entries.len() >= self.max_entries {

@@ -142,7 +142,12 @@ async fn main() {
                         .restore_from_snapshot(exact_entries);
                     println!(
                         "Exact cache restored: {} entries",
-                        shared_state.exact_cache.read().unwrap().snapshot_entries().len()
+                        shared_state
+                            .exact_cache
+                            .read()
+                            .unwrap()
+                            .snapshot_entries()
+                            .len()
                     );
                     // Restore semantic index
                     let mut semantic_count = 0usize;
@@ -177,8 +182,7 @@ async fn main() {
                             created_at,
                             ttl,
                         };
-                        let mut bucket =
-                            shared_state.index.entry(item.context_key).or_default();
+                        let mut bucket = shared_state.index.entry(item.context_key).or_default();
                         if bucket.len() < shared_state.config.semantic_max_bucket_items {
                             bucket.push(cache_item);
                             semantic_count += 1;
@@ -247,9 +251,7 @@ fn with_route_headers(
 /// Collect cache data for snapshot (shared between debounced and flush paths).
 type ExactEntry = (String, Vec<u8>, u64, u64);
 type SemEntry = (String, String, Vec<f32>, Vec<u8>, u64, u64);
-fn collect_snapshot_data(
-    state: &AppState,
-) -> (Vec<ExactEntry>, Vec<SemEntry>, u64) {
+fn collect_snapshot_data(state: &AppState) -> (Vec<ExactEntry>, Vec<SemEntry>, u64) {
     let exact_entries = state
         .exact_cache
         .read()
@@ -279,7 +281,11 @@ fn collect_snapshot_data(
 }
 
 /// Serialize and write snapshot to disk (blocking — run on spawn_blocking).
-fn write_snapshot_to_disk(cache_path: &str, exact_entries: Vec<ExactEntry>, semantic_entries: Vec<SemEntry>) {
+fn write_snapshot_to_disk(
+    cache_path: &str,
+    exact_entries: Vec<ExactEntry>,
+    semantic_entries: Vec<SemEntry>,
+) {
     let exact: Vec<_> = exact_entries
         .into_iter()
         .map(|(key, body, epoch, ttl)| crate::cache::SnapshotEntry {
@@ -291,14 +297,16 @@ fn write_snapshot_to_disk(cache_path: &str, exact_entries: Vec<ExactEntry>, sema
         .collect();
     let semantic: Vec<_> = semantic_entries
         .into_iter()
-        .map(|(ctx, prompt, vector, body, epoch, ttl)| crate::cache::SnapshotItem {
-            context_key: ctx,
-            prompt,
-            vector,
-            completion_response: body,
-            created_at_epoch: epoch,
-            ttl_secs: ttl,
-        })
+        .map(
+            |(ctx, prompt, vector, body, epoch, ttl)| crate::cache::SnapshotItem {
+                context_key: ctx,
+                prompt,
+                vector,
+                completion_response: body,
+                created_at_epoch: epoch,
+                ttl_secs: ttl,
+            },
+        )
         .collect();
     let snapshot = crate::cache::Snapshot {
         exact_entries: exact,
@@ -637,10 +645,8 @@ async fn handle_intercept(
                         }
                         if semantic_eligible {
                             if let Some(ref vector) = vector_clone {
-                                let mut bucket = state_clone
-                                    .index
-                                    .entry(context_key_clone)
-                                    .or_default();
+                                let mut bucket =
+                                    state_clone.index.entry(context_key_clone).or_default();
                                 let item = CacheItem {
                                     prompt: prompt_clone.clone(),
                                     vector: vector.clone(),
@@ -709,9 +715,7 @@ async fn handle_intercept(
                             vector: target_vec.clone(),
                             completion_response: bytes.to_vec(),
                             created_at: std::time::Instant::now(),
-                            ttl: std::time::Duration::from_secs(
-                                state.config.semantic_ttl_secs,
-                            ),
+                            ttl: std::time::Duration::from_secs(state.config.semantic_ttl_secs),
                         };
                         let mut bucket = state.index.entry(context_key.clone()).or_default();
                         // Push first, then evict — avoids max+1 off-by-one
@@ -739,12 +743,10 @@ async fn handle_intercept(
         }
         Err(_) => {
             let body: Body = if is_streaming {
-                Body::from(
-                    format!(
-                        "data: {}\n\ndata: [DONE]\n\n",
-                        serde_json::json!({"error": {"message": "Upstream Timeout"}})
-                    ),
-                )
+                Body::from(format!(
+                    "data: {}\n\ndata: [DONE]\n\n",
+                    serde_json::json!({"error": {"message": "Upstream Timeout"}})
+                ))
             } else {
                 Body::from("Upstream Timeout")
             };
@@ -760,6 +762,6 @@ async fn handle_intercept(
                 builder = builder.header("content-type", "text/event-stream");
             }
             builder.body(body).unwrap().into_response()
-        },
+        }
     }
 }
