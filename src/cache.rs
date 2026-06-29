@@ -390,3 +390,160 @@ pub fn load_snapshot(path: &str) -> Result<Snapshot, Box<dyn std::error::Error>>
     let snapshot: Snapshot = rmp_serde::from_slice(&bytes)?;
     Ok(snapshot)
 }
+
+// ── Unit tests ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn make_item(created_ago_secs: u64, ttl_secs: u64) -> CacheItem {
+        CacheItem {
+            prompt: String::new(),
+            vector: vec![],
+            completion_response: vec![],
+            created_at: Instant::now() - Duration::from_secs(created_ago_secs),
+            ttl: Duration::from_secs(ttl_secs),
+        }
+    }
+
+    #[test]
+    fn test_evict_bucket_expired() {
+        let mut bucket = vec![make_item(100, 10)]; // 100s old, 10s TTL -> expired
+        let evicted = evict_bucket(&mut bucket, 10);
+        assert_eq!(evicted, 1);
+        assert!(bucket.is_empty());
+    }
+
+    #[test]
+    fn test_evict_bucket_cap_enforced() {
+        let mut bucket: Vec<CacheItem> = (0..10).map(|i| make_item(i, 3600)).collect();
+        let evicted = evict_bucket(&mut bucket, 5);
+        assert_eq!(evicted, 5);
+        assert_eq!(bucket.len(), 5);
+        // The 5 newest items (smallest created_ago) remain
+    }
+
+    #[test]
+    fn test_evict_bucket_under_cap_noop() {
+        let mut bucket: Vec<CacheItem> = (0..3).map(|i| make_item(i, 3600)).collect();
+        let evicted = evict_bucket(&mut bucket, 10);
+        assert_eq!(evicted, 0);
+        assert_eq!(bucket.len(), 3);
+    }
+
+    #[test]
+    fn test_evict_global_counts_total_entries_not_buckets() {
+        let index = DashMap::new();
+        // 3 buckets, each with 2 entries = 6 total
+        for ctx in ["a", "b", "c"] {
+            let mut bucket = Vec::new();
+            for _ in 0..2 {
+                bucket.push(make_item(10, 3600));
+            }
+            index.insert(ctx.to_string(), bucket);
+        }
+        assert_eq!(index.len(), 3); // 3 buckets
+
+        // max_items = 4 total entries -> should evict 2
+        let evicted = evict_global(&index, 4);
+        assert_eq!(evicted, 2);
+        let total: usize = index.iter().map(|e| e.value().len()).sum();
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn test_evict_global_removes_oldest_first() {
+        let index = DashMap::new();
+        // One bucket with 3 items aged 100s, 50s, 10s
+        let bucket = vec![
+            make_item(100, 3600),
+            make_item(50, 3600),
+            make_item(10, 3600),
+        ];
+        index.insert("ctx".to_string(), bucket);
+
+        // max_items = 1 -> evict 2 oldest (100s and 50s)
+        let evicted = evict_global(&index, 1);
+        assert_eq!(evicted, 2);
+        let remaining: Vec<_> = index
+            .get("ctx")
+            .unwrap()
+            .iter()
+            .map(|i| i.created_at.elapsed().as_secs())
+            .collect();
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining[0] < 20); // the ~10s old item remained
+    }
+
+    #[test]
+    fn test_evict_global_expired_removed_first() {
+        let index = DashMap::new();
+        // 2 expired, 1 fresh
+        let bucket = vec![
+            make_item(100, 10),  // expired (100s old, 10s TTL)
+            make_item(50, 10),   // expired (50s old, 10s TTL)
+            make_item(5, 3600),  // fresh
+        ];
+        index.insert("ctx".to_string(), bucket);
+
+        // max_items = 3 (bucket count < 3) but expired items should still be removed
+        let evicted = evict_global(&index, 3);
+        assert_eq!(evicted, 2);
+        let total: usize = index.iter().map(|e| e.value().len()).sum();
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn test_exact_cache_ttl() {
+        let mut cache = ExactCache::new(100, 1); // 1 second TTL
+        cache.insert("key1".to_string(), b"hello".to_vec());
+        assert!(cache.get("key1").is_some());
+        std::thread::sleep(Duration::from_millis(1100));
+        assert!(cache.get("key1").is_none()); // expired
+    }
+
+    #[test]
+    fn test_exact_cache_max_entries() {
+        let mut cache = ExactCache::new(2, 3600);
+        cache.insert("a".to_string(), b"1".to_vec());
+        cache.insert("b".to_string(), b"2".to_vec());
+        cache.insert("c".to_string(), b"3".to_vec()); // should evict oldest (a)
+        assert!(cache.get("a").is_none());
+        assert!(cache.get("b").is_some());
+        assert!(cache.get("c").is_some());
+    }
+
+    #[test]
+    fn test_exact_cache_snapshot_roundtrip() {
+        let mut cache = ExactCache::new(100, 3600);
+        cache.insert("k1".to_string(), b"v1".to_vec());
+        cache.insert("k2".to_string(), b"v2".to_vec());
+
+        let entries = cache.snapshot_entries();
+        assert_eq!(entries.len(), 2);
+
+        let mut restored = ExactCache::new(100, 3600);
+        restored.restore_from_snapshot(entries);
+        assert!(restored.get("k1").is_some());
+        assert!(restored.get("k2").is_some());
+        assert_eq!(restored.get("k1").unwrap().response_body, b"v1");
+    }
+
+    #[test]
+    fn test_exact_cache_snapshot_skips_expired() {
+        let mut cache = ExactCache::new(100, 1); // 1s TTL
+        cache.insert("stale".to_string(), b"old".to_vec());
+
+        let entries = cache.snapshot_entries(); // snapshot has 1s TTL
+        // Sleep so entry expires under its original TTL
+        std::thread::sleep(Duration::from_millis(1100));
+
+        let mut restored = ExactCache::new(100, 3600); // restore with longer TTL
+        restored.restore_from_snapshot(entries);
+        // When ttl (1) != snapshot_ttl (3600), the expired check applies.
+        // Entry was 1.1s old with 1s TTL → expired → skipped.
+        assert!(restored.get("stale").is_none());
+    }
+}
