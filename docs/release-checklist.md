@@ -24,26 +24,16 @@
 - [ ] Update `version` in `Cargo.toml` (semver)
 - [ ] Update `CHANGELOG.md` with release notes
   ```markdown
-  ## [0.1.0] - 2026-06-28
+  ## [0.1.1] - 2026-06-29
 
   ### Added
-  - Exact cache (SHA256-based, in-memory)
-  - Semantic cache (BGE-small-en-v1.5 embeddings, opt-in)
-  - Dynamic model routing (opt-in, safe-by-default)
-  - Transparent route headers on all responses
-  - Tenant-level cache isolation
-  - Mock-server integration tests (84 checks)
-  - 60-second demo script
-  - Latency benchmark script
+  - Linux x86_64 binary via CI
+  - SHA256 checksums for all release artifacts
+  - CI status badge and release badge in README
+  - Automated GitHub Release workflow (tag-triggered)
 
-  ### Safety
-  - Routing is opt-in (default: off)
-  - Unsafe features block routing (tools, structured output, temp > 0, multimodal)
-  - High-reasoning keyword classifier (30+ patterns)
-  - Explicit model requirement detection
-  - Cache namespace isolation for routed vs passthrough responses
-  - Fallback API key leakage prevention
-  - Bearer prefix normalization
+  ### Changed
+  - `.gitignore` now excludes `dist/` directory
   ```
 
 ## Build
@@ -54,10 +44,14 @@ cargo build --release --target x86_64-pc-windows-msvc
 strip target/x86_64-pc-windows-msvc/release/stack-intercept.exe
 ```
 
-### Linux (CI or cross-compile)
+### Linux (CI — automated)
+Linux binary is built automatically by the `release.yml` workflow when the tag is pushed.
+See `.github/workflows/release.yml` for details.
+
+### Windows (manual build)
 ```bash
-cargo build --release --target x86_64-unknown-linux-gnu
-strip target/x86_64-unknown-linux-gnu/release/stack-intercept
+cargo build --release --target x86_64-pc-windows-msvc
+strip target/x86_64-pc-windows-msvc/release/stack-intercept.exe
 ```
 
 ## Package
@@ -69,8 +63,8 @@ strip target/x86_64-unknown-linux-gnu/release/stack-intercept
 
 ## GitHub Release
 
-- [ ] Tag: `git tag v0.1.0 && git push --tags`
+- [ ] Tag: `git tag v0.1.1 && git push --tags`
 - [ ] Create release at https://github.com/sidsri14/stack-intercept/releases
-- [ ] Upload Linux binary: `stack-intercept-v0.1.0-x86_64-unknown-linux-gnu.tar.gz`
-- [ ] Upload Windows binary: `stack-intercept-v0.1.0-x86_64-pc-windows-msvc.zip`
+- [ ] Upload Linux binary: `stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz`
+- [ ] Upload Windows binary: `stack-intercept-v0.1.1-x86_64-pc-windows-msvc.zip`
 - [ ] Write release notes (copy from CHANGELOG)

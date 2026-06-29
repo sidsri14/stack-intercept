@@ -1,5 +1,9 @@
 # StackIntercept
 
+[![CI](https://github.com/sidsri14/stack-intercept/actions/workflows/ci.yml/badge.svg)](https://github.com/sidsri14/stack-intercept/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/sidsri14/stack-intercept?logo=github)](https://github.com/sidsri14/stack-intercept/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 **Local OpenAI-compatible cost-control proxy.** Sits between your app and an LLM provider. Caches responses for zero-cost repeats. Optionally routes simple prompts to cheaper models. One binary, no dependencies.
 
 ```
@@ -50,6 +54,19 @@ client = OpenAI(base_url="http://127.0.0.1:8080", api_key="sk-your-key")
 # Second request — cache hit, instant response
 python test_mock_upstream.py    # 24 checks, no API key needed
 python test_routing.py          # 60 checks, no API key needed
+```
+
+## Download
+
+Pre-built binaries for Linux and Windows on the [Releases page](https://github.com/sidsri14/stack-intercept/releases).
+
+```bash
+# Linux
+curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.1.1/stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+tar xzf stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+cd stack-intercept
+
+# Windows — download the .zip from the Releases page and extract
 ```
 
 ## How it works

@@ -3,3 +3,4 @@ model/*.safetensors
 __pycache__/
 .env
 *.tar.gz
+/dist

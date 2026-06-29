@@ -14,24 +14,54 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
 
   build:
+    needs: [check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
       - run: cargo check
       - run: cargo build
 
   integration:
+    needs: [check, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
       - run: cargo build
       - name: Mock upstream integration tests
         run: python test_mock_upstream.py
       - name: Routing integration tests
         run: python test_routing.py
+
+  package:
+    needs: [check, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: strip target/release/stack-intercept
+      - name: Create package directory
+        run: |
+          mkdir -p dist/stack-intercept
+          cp target/release/stack-intercept dist/stack-intercept/
+          cp .env.example README.md download_model.sh dist/stack-intercept/
+      - name: Create tarball
+        run: tar czf stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz -C dist stack-intercept
+      - name: Generate SHA256 checksum
+        run: sha256sum stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz > checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stack-intercept-linux-x86_64
+          path: |
+            stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+            checksums.txt
