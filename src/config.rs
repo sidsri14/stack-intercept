@@ -195,28 +195,33 @@ impl ProxyConfig {
             self.admin_key = Some(v);
         }
         if let Ok(v) = std::env::var("STACK_INTERCEPT_EXACT_MAX_ENTRIES") {
-            if let Ok(n) = v.parse() {
-                self.exact_max_entries = n;
+            match v.parse() {
+                Ok(n) => self.exact_max_entries = n,
+                Err(_) => eprintln!("WARNING: STACK_INTERCEPT_EXACT_MAX_ENTRIES='{}' is not a valid number, ignoring", v),
             }
         }
         if let Ok(v) = std::env::var("STACK_INTERCEPT_EXACT_TTL_SECS") {
-            if let Ok(n) = v.parse() {
-                self.exact_ttl_secs = n;
+            match v.parse() {
+                Ok(n) => self.exact_ttl_secs = n,
+                Err(_) => eprintln!("WARNING: STACK_INTERCEPT_EXACT_TTL_SECS='{}' is not a valid number, ignoring", v),
             }
         }
         if let Ok(v) = std::env::var("STACK_INTERCEPT_SEMANTIC_MAX_ITEMS") {
-            if let Ok(n) = v.parse() {
-                self.semantic_max_items = n;
+            match v.parse() {
+                Ok(n) => self.semantic_max_items = n,
+                Err(_) => eprintln!("WARNING: STACK_INTERCEPT_SEMANTIC_MAX_ITEMS='{}' is not a valid number, ignoring", v),
             }
         }
         if let Ok(v) = std::env::var("STACK_INTERCEPT_SEMANTIC_MAX_BUCKET_ITEMS") {
-            if let Ok(n) = v.parse() {
-                self.semantic_max_bucket_items = n;
+            match v.parse() {
+                Ok(n) => self.semantic_max_bucket_items = n,
+                Err(_) => eprintln!("WARNING: STACK_INTERCEPT_SEMANTIC_MAX_BUCKET_ITEMS='{}' is not a valid number, ignoring", v),
             }
         }
         if let Ok(v) = std::env::var("STACK_INTERCEPT_SEMANTIC_TTL_SECS") {
-            if let Ok(n) = v.parse() {
-                self.semantic_ttl_secs = n;
+            match v.parse() {
+                Ok(n) => self.semantic_ttl_secs = n,
+                Err(_) => eprintln!("WARNING: STACK_INTERCEPT_SEMANTIC_TTL_SECS='{}' is not a valid number, ignoring", v),
             }
         }
         if let Ok(v) = std::env::var("STACK_INTERCEPT_CACHE_PATH") {

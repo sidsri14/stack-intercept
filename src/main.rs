@@ -566,11 +566,12 @@ async fn admin_cache_flush(
             }
         }
     }
+    let exact_guard = state.exact_cache.read().unwrap();
     let resp = CacheSummaryResponse {
         exact: CacheSummaryExact {
             entries: 0,
-            max_entries: state.exact_cache.read().unwrap().max_entries(),
-            ttl_secs: state.exact_cache.read().unwrap().default_ttl_secs(),
+            max_entries: exact_guard.max_entries(),
+            ttl_secs: exact_guard.default_ttl_secs(),
         },
         semantic: CacheSummarySemantic {
             buckets: 0,
