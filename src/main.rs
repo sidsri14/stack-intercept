@@ -22,6 +22,7 @@ use futures_util::stream;
 use futures_util::StreamExt;
 use reqwest::Client;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 const ALIGNMENT_BAR: f32 = 0.93;
@@ -89,12 +90,41 @@ fn build_context_key(
     format!("{:x}", hasher.finalize())
 }
 
+pub struct Metrics {
+    pub exact_hits: AtomicU64,
+    pub semantic_hits: AtomicU64,
+    pub misses: AtomicU64,
+    pub upstream_errors: AtomicU64,
+    pub routed_fallback: AtomicU64,
+    pub routed_passthrough: AtomicU64,
+    pub cache_inserts_exact: AtomicU64,
+    pub cache_inserts_semantic: AtomicU64,
+    pub started_at: std::time::Instant,
+}
+
+impl Metrics {
+    pub fn new() -> Self {
+        Self {
+            exact_hits: AtomicU64::new(0),
+            semantic_hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            upstream_errors: AtomicU64::new(0),
+            routed_fallback: AtomicU64::new(0),
+            routed_passthrough: AtomicU64::new(0),
+            cache_inserts_exact: AtomicU64::new(0),
+            cache_inserts_semantic: AtomicU64::new(0),
+            started_at: std::time::Instant::now(),
+        }
+    }
+}
+
 struct AppState {
     predictor: Option<Arc<LocalPredictor>>,
     index: DashMap<String, Vec<CacheItem>>,
     exact_cache: RwLock<ExactCache>,
     config: ProxyConfig,
     client: Client,
+    metrics: Metrics,
     last_persist: Mutex<std::time::Instant>,
 }
 
@@ -102,7 +132,7 @@ struct AppState {
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let config = ProxyConfig::from_env();
+    let config = ProxyConfig::load();
     println!("Cache mode: {:?}", config.cache_mode);
     if config.admin_key.is_some() {
         println!("Admin key: configured");
@@ -124,9 +154,13 @@ async fn main() {
     let shared_state = Arc::new(AppState {
         predictor,
         index: DashMap::new(),
-        exact_cache: RwLock::new(ExactCache::new(20000, 3600)),
+        exact_cache: RwLock::new(ExactCache::new(
+            config.exact_max_entries,
+            config.exact_ttl_secs,
+        )),
         config,
         client: Client::new(),
+        metrics: Metrics::new(),
         last_persist: Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(10)),
     });
 
