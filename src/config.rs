@@ -203,7 +203,10 @@ impl ProxyConfig {
         if let Ok(v) = std::env::var("STACK_INTERCEPT_EXACT_TTL_SECS") {
             match v.parse() {
                 Ok(n) => self.exact_ttl_secs = n,
-                Err(_) => eprintln!("WARNING: STACK_INTERCEPT_EXACT_TTL_SECS='{}' is not a valid number, ignoring", v),
+                Err(_) => eprintln!(
+                    "WARNING: STACK_INTERCEPT_EXACT_TTL_SECS='{}' is not a valid number, ignoring",
+                    v
+                ),
             }
         }
         if let Ok(v) = std::env::var("STACK_INTERCEPT_SEMANTIC_MAX_ITEMS") {
@@ -280,7 +283,10 @@ mod tests {
 
         let exe = std::env::current_exe().unwrap();
         let output = std::process::Command::new(&exe)
-            .env("STACK_INTERCEPT_CONFIG", "/tmp/__stack_intercept_does-not-exist-test.toml")
+            .env(
+                "STACK_INTERCEPT_CONFIG",
+                "/tmp/__stack_intercept_does-not-exist-test.toml",
+            )
             .args(&["config_fatal_missing_file_subprocess_check", "--nocapture"])
             .output()
             .unwrap();
@@ -310,10 +316,7 @@ mod tests {
 
         // Save old env var and set new one
         let old_val = std::env::var("STACK_INTERCEPT_CONFIG").ok();
-        std::env::set_var(
-            "STACK_INTERCEPT_CONFIG",
-            toml_path.to_str().unwrap(),
-        );
+        std::env::set_var("STACK_INTERCEPT_CONFIG", toml_path.to_str().unwrap());
 
         let cfg = ProxyConfig::load();
 
@@ -380,10 +383,15 @@ mod tests {
     // Test 4: Unknown TOML key fails (deny_unknown_fields).
     #[test]
     fn test_unknown_toml_key_fails() {
-        let result: Result<FileConfig, _> = toml::from_str(r#"
+        let result: Result<FileConfig, _> = toml::from_str(
+            r#"
             unknown_field = "this should fail"
-        "#);
-        assert!(result.is_err(), "deny_unknown_fields should reject unknown keys");
+        "#,
+        );
+        assert!(
+            result.is_err(),
+            "deny_unknown_fields should reject unknown keys"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("unknown_field") || err_msg.contains("unknown field"),
@@ -425,7 +433,9 @@ mod tests {
         let file_cfg = FileConfig::default();
         let mut cfg = ProxyConfig::defaults();
         let original = cfg.exact_max_entries;
-        if let Some(v) = file_cfg.exact_max_entries { cfg.exact_max_entries = v; }
+        if let Some(v) = file_cfg.exact_max_entries {
+            cfg.exact_max_entries = v;
+        }
         assert_eq!(cfg.exact_max_entries, original);
     }
 
@@ -437,8 +447,12 @@ mod tests {
             ..Default::default()
         };
         let mut cfg = ProxyConfig::defaults();
-        if let Some(v) = file_cfg.exact_max_entries { cfg.exact_max_entries = v; }
-        if let Some(v) = file_cfg.exact_ttl_secs { cfg.exact_ttl_secs = v; }
+        if let Some(v) = file_cfg.exact_max_entries {
+            cfg.exact_max_entries = v;
+        }
+        if let Some(v) = file_cfg.exact_ttl_secs {
+            cfg.exact_ttl_secs = v;
+        }
         assert_eq!(cfg.exact_max_entries, 5000);
         assert_eq!(cfg.exact_ttl_secs, 7200);
         assert_eq!(cfg.semantic_max_items, 10000); // unchanged

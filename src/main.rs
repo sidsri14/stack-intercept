@@ -17,11 +17,11 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use serde::Serialize;
 use dashmap::DashMap;
 use futures_util::stream;
 use futures_util::StreamExt;
 use reqwest::Client;
+use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -116,6 +116,12 @@ impl Metrics {
             cache_inserts_semantic: AtomicU64::new(0),
             started_at: std::time::Instant::now(),
         }
+    }
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -266,19 +272,19 @@ async fn main() {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-        .with_graceful_shutdown(async move {
-            tokio::signal::ctrl_c().await.ok();
-            println!("Shutting down, flushing cache to disk...");
-            let state = server_state;
-            tokio::task::spawn_blocking(move || {
-                flush_persistence(&state);
-            })
-            .await
-            .ok();
-            println!("Cache flushed.");
+    .with_graceful_shutdown(async move {
+        tokio::signal::ctrl_c().await.ok();
+        println!("Shutting down, flushing cache to disk...");
+        let state = server_state;
+        tokio::task::spawn_blocking(move || {
+            flush_persistence(&state);
         })
         .await
-        .unwrap();
+        .ok();
+        println!("Cache flushed.");
+    })
+    .await
+    .unwrap();
 }
 
 fn as_bearer(key: &str) -> String {
@@ -594,7 +600,11 @@ async fn admin_cache_exact_delete(
         return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
     let removed = state.exact_cache.write().unwrap().remove(&key);
-    (StatusCode::OK, Json(serde_json::json!({"removed": removed}))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"removed": removed})),
+    )
+        .into_response()
 }
 
 async fn admin_cache_semantic_delete(
@@ -607,7 +617,11 @@ async fn admin_cache_semantic_delete(
         return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
     let existed = state.index.remove(&context_key).is_some();
-    (StatusCode::OK, Json(serde_json::json!({"removed": existed}))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"removed": existed})),
+    )
+        .into_response()
 }
 
 async fn handle_intercept(
@@ -680,9 +694,15 @@ async fn handle_intercept(
     let routed_model = &route.final_model;
 
     if route.needs_fallback_key {
-        state.metrics.routed_fallback.fetch_add(1, Ordering::Relaxed);
+        state
+            .metrics
+            .routed_fallback
+            .fetch_add(1, Ordering::Relaxed);
     } else {
-        state.metrics.routed_passthrough.fetch_add(1, Ordering::Relaxed);
+        state
+            .metrics
+            .routed_passthrough
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     // Build routing namespace for cache key isolation (always present —
@@ -900,7 +920,10 @@ async fn handle_intercept(
                                     .write()
                                     .unwrap()
                                     .insert(key_hash.clone(), final_bytes.clone());
-                                state_clone.metrics.cache_inserts_exact.fetch_add(1, Ordering::Relaxed);
+                                state_clone
+                                    .metrics
+                                    .cache_inserts_exact
+                                    .fetch_add(1, Ordering::Relaxed);
                                 println!("Stream cached (exact).");
                                 persist_after_insert(&state_clone);
                             }
@@ -920,7 +943,10 @@ async fn handle_intercept(
                                 };
                                 // Push first, then evict — avoids max+1 off-by-one
                                 bucket.push(item);
-                                state_clone.metrics.cache_inserts_semantic.fetch_add(1, Ordering::Relaxed);
+                                state_clone
+                                    .metrics
+                                    .cache_inserts_semantic
+                                    .fetch_add(1, Ordering::Relaxed);
                                 evict_bucket(
                                     &mut bucket,
                                     state_clone.config.semantic_max_bucket_items,
@@ -968,7 +994,10 @@ async fn handle_intercept(
                             .write()
                             .unwrap()
                             .insert(key_hash.clone(), bytes.to_vec());
-                        state.metrics.cache_inserts_exact.fetch_add(1, Ordering::Relaxed);
+                        state
+                            .metrics
+                            .cache_inserts_exact
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                     persist_after_insert(&state);
                 }
@@ -984,7 +1013,10 @@ async fn handle_intercept(
                         let mut bucket = state.index.entry(context_key.clone()).or_default();
                         // Push first, then evict — avoids max+1 off-by-one
                         bucket.push(item);
-                        state.metrics.cache_inserts_semantic.fetch_add(1, Ordering::Relaxed);
+                        state
+                            .metrics
+                            .cache_inserts_semantic
+                            .fetch_add(1, Ordering::Relaxed);
                         evict_bucket(&mut bucket, state.config.semantic_max_bucket_items);
                         if total_semantic_entries(&state.index) > state.config.semantic_max_items {
                             evict_global(&state.index, state.config.semantic_max_items);
@@ -1007,7 +1039,10 @@ async fn handle_intercept(
             .into_response()
         }
         Err(_) => {
-            state.metrics.upstream_errors.fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .upstream_errors
+                .fetch_add(1, Ordering::Relaxed);
             let body: Body = if is_streaming {
                 Body::from(format!(
                     "data: {}\n\ndata: [DONE]\n\n",
@@ -1060,7 +1095,11 @@ mod admin_auth_tests {
         let headers = HeaderMap::new();
         let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
         let result = check_admin_auth(&headers, addr, &cfg);
-        assert!(result.is_ok(), "loopback without key should be allowed, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "loopback without key should be allowed, got: {:?}",
+            result
+        );
     }
 
     // Test 6: Admin auth non-loopback forbidden without key
@@ -1082,7 +1121,11 @@ mod admin_auth_tests {
         headers.insert("x-admin-key", "secret123".parse().unwrap());
         let addr = SocketAddr::from(([10, 0, 0, 1], 12345));
         let result = check_admin_auth(&headers, addr, &cfg);
-        assert!(result.is_ok(), "correct key on non-loopback should be allowed, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "correct key on non-loopback should be allowed, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1114,6 +1157,10 @@ mod admin_auth_tests {
         headers.insert("x-admin-key", "secret123".parse().unwrap());
         let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
         let result = check_admin_auth(&headers, addr, &cfg);
-        assert!(result.is_ok(), "correct key on loopback should be allowed, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "correct key on loopback should be allowed, got: {:?}",
+            result
+        );
     }
 }

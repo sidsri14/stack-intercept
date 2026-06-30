@@ -316,6 +316,10 @@ impl ExactCache {
         self.entries.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn max_entries(&self) -> usize {
         self.max_entries
     }
