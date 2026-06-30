@@ -303,6 +303,26 @@ impl ExactCache {
             );
         }
     }
+
+    pub fn remove(&mut self, key: &str) -> bool {
+        self.entries.remove(key).is_some()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    pub fn default_ttl_secs(&self) -> u64 {
+        self.default_ttl.as_secs()
+    }
 }
 
 // ── Snapshot types for disk persistence ──
