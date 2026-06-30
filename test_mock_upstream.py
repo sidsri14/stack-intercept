@@ -160,6 +160,38 @@ def send_request(payload, extra_headers=None):
         return hit_flag, e.code, e.read().decode()
 
 
+def send_admin_get(path, extra_headers=None):
+    """Send a GET request to an admin endpoint."""
+    url = f"http://127.0.0.1:{PROXY_PORT}/admin{path}"
+    headers = {}
+    if extra_headers:
+        headers.update(extra_headers)
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        body = json.loads(resp.read().decode())
+        return resp.status, body, resp.headers
+    except urllib.error.HTTPError as e:
+        body = json.loads(e.read().decode())
+        return e.code, body, e.headers
+
+
+def send_admin_delete(path, extra_headers=None):
+    """Send a DELETE request to an admin endpoint."""
+    url = f"http://127.0.0.1:{PROXY_PORT}/admin{path}"
+    headers = {}
+    if extra_headers:
+        headers.update(extra_headers)
+    req = urllib.request.Request(url, data=b"", headers=headers, method="DELETE")
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        body = json.loads(resp.read().decode())
+        return resp.status, body, resp.headers
+    except urllib.error.HTTPError as e:
+        body = json.loads(e.read().decode())
+        return e.code, body, e.headers
+
+
 def check(name, cond, detail=""):
     global PASS, FAIL
     if cond:
@@ -317,6 +349,89 @@ def run_tenant_test():
     print()
 
 
+def run_admin_tests():
+    """Tests for admin routes: metrics, cache summary, eviction."""
+    print("=" * 60)
+    print("Test 8: GET /admin/metrics — zero state")
+    status, body, _ = send_admin_get("/metrics")
+    check("admin/metrics status 200", status == 200, f"(status: {status})")
+    check("admin/metrics has uptime_secs", "uptime_secs" in body)
+    check("admin/metrics exact_hits is 0", body.get("exact_hits") == 0)
+    check("admin/metrics semantic_hits is 0", body.get("semantic_hits") == 0)
+    check("admin/metrics misses is 0", body.get("misses") == 0)
+    print()
+
+    print("=" * 60)
+    print("Test 9: GET /admin/cache — zero cache")
+    status, body, _ = send_admin_get("/cache")
+    check("admin/cache status 200", status == 200, f"(status: {status})")
+    check("admin/cache has exact.entries", body["exact"]["entries"] == 0)
+    check("admin/cache has exact.max_entries", body["exact"]["max_entries"] == 20000)
+    check("admin/cache has semantic.entries", body["semantic"]["entries"] == 0)
+    check("admin/cache has semantic.buckets", body["semantic"]["buckets"] == 0)
+    print()
+
+    print("=" * 60)
+    print("Test 10: Metrics after cache hit/miss")
+    payload = {
+        "model": "mock-model",
+        "messages": [{"role": "user", "content": "Admin metrics test"}],
+        "temperature": 0,
+        "stream": False,
+    }
+    # Miss
+    send_request(payload)
+    # Hit
+    send_request(payload)
+
+    time.sleep(1.5)  # Ensure uptime_secs ticks past 0
+
+    status, body, _ = send_admin_get("/metrics")
+    check("exact_hits >= 1 after hit", body.get("exact_hits") >= 1)
+    check("misses >= 1 after miss", body.get("misses") >= 1)
+    check("uptime_secs > 0", body.get("uptime_secs", 0) > 0)
+    print()
+
+    print("=" * 60)
+    print("Test 11: GET /admin/cache — after cache insert")
+    status, body, _ = send_admin_get("/cache")
+    check("admin/cache exact.entries >= 1", body["exact"]["entries"] >= 1)
+    print()
+
+    print("=" * 60)
+    print("Test 12: DELETE /admin/cache — flush all caches")
+    status, body, _ = send_admin_delete("/cache")
+    check("flush status 200", status == 200, f"(status: {status})")
+    check("flush exact.entries is 0", body["exact"]["entries"] == 0)
+    check("flush semantic.entries is 0", body["semantic"]["entries"] == 0)
+
+    # Verify caches are empty
+    status, body, _ = send_admin_get("/cache")
+    check("cache exact.entries is 0 after flush", body["exact"]["entries"] == 0)
+
+    # The same request should miss again (cache was cleared)
+    hit, status, _ = send_request(payload)
+    check("miss after flush", hit != "hit", f"(got: {hit})")
+    print()
+
+    print("=" * 60)
+    print("Test 13: DELETE /admin/cache/exact/:key")
+    # Make a cacheable request
+    payload2 = {
+        "model": "mock-model",
+        "messages": [{"role": "user", "content": "Delete me"}],
+        "temperature": 0,
+    }
+    send_request(payload2)
+    hit, _, _ = send_request(payload2)  # Should be hit
+    check("hit before key deletion", hit == "hit", f"(got: {hit})")
+
+    # Test with a nonexistent key to verify the endpoint works
+    status, body, _ = send_admin_delete("/cache/exact/nonexistentkey")
+    check("delete nonexistent key returns removed: false", body.get("removed") == False)
+    print()
+
+
 def reset_mock_count():
     global mock_request_count
     with mock_request_lock:
@@ -353,6 +468,18 @@ def main():
             sys.exit(1)
 
         run_tenant_test()
+
+        # Restart proxy without tenant header for admin tests
+        proxy.terminate()
+        proxy.wait(timeout=5)
+        reset_mock_count()
+
+        proxy = start_proxy()  # basic config, no extra env vars
+        if not wait_for(PROXY_URL):
+            print("FAILED: Proxy did not start for admin tests")
+            sys.exit(1)
+
+        run_admin_tests()
 
         # === Summary ===
         print("=" * 60)
