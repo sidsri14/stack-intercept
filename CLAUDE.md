@@ -11,22 +11,32 @@ Routing is opt-in (`STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`). Cache keys inclu
 ## File Map
 
 ### Source
-- `src/main.rs` — Axum HTTP server, `/v1/chat/completions` handler, AppState, streaming passthrough, cache orchestration
+- `src/main.rs` — Axum HTTP server, `/v1/chat/completions` handler, AppState, streaming passthrough, cache orchestration, `Metrics` struct (8 AtomicU64 counters), 5 admin route handlers, `check_admin_auth()`, `is_loopback()`
 - `src/embeddings.rs` — `LocalPredictor` struct: `init_from_disk()`, `encode_text(&str) -> Vec<f32>`. BGE-small-en-v1.5 model, 384-dim, mean pooling + L2 normalization
-- `src/cache.rs` — `cache_key_hash()` (SHA256 of canonical full payload + provider + tenant), `is_eligible()` checks, `ExactCache` (bounded TTL-based with `Vec<u8>` body), `CachedEntry`
-- `src/router.rs` — `evaluate_routing()` inspects payload, classifies prompt complexity, decides whether to downgrade premium models to cheap models. Opt-in via `STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`.
-- `src/config.rs` — `ProxyConfig::from_env()` reads `STACK_INTERCEPT_CACHE_MODE`, `STACK_INTERCEPT_TENANT_ID_HEADER`, `STACK_INTERCEPT_ALLOW_MODEL_REWRITE`, `STACK_INTERCEPT_UPSTREAM_URL`, `STACK_INTERCEPT_FALLBACK_URL`, `STACK_INTERCEPT_FALLBACK_API_KEY`
+- `src/cache.rs` — `cache_key_hash()` (SHA256 of canonical full payload + provider + tenant + routing namespace), `is_eligible()` checks, `ExactCache` (bounded TTL-based with `Vec<u8>` body, +`remove`/`clear`/`len`/`is_empty`/`max_entries`/`default_ttl_secs`), `CachedEntry`, `CacheItem`, `evict_bucket()`/`evict_global()`, Snapshot types (rmp-serde MessagePack persistence)
+- `src/router.rs` — `evaluate_routing()` inspects payload, classifies prompt complexity, decides whether to downgrade premium models to cheap models. Opt-in via `STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`. `RouteDecision` with `cache_namespace()`.
+- `src/config.rs` — `FileConfig` (TOML deserialization, `#[serde(deny_unknown_fields)]`), `ProxyConfig` (`defaults()`/`load()`/`from_env()`/`apply_file_config()`/`apply_env_overrides()`), `CacheMode` enum. All 14 settings plus env-override-warnings for parse failures.
 
 ### Scripts & Config
 - `build.cmd` — MSVC build env wrapper (VS Build Tools 2022, 14.44.35207). Run `./build.cmd build` (use Git Bash, not `.\build.cmd`)
 - `download_model.sh` — Fetches bge-small-en-v1.5 (config.json, tokenizer.json, model.safetensors) from HuggingFace
 - `test_proxy.py` — Two-prompt verification (cache miss, then exact/semantic hit)
 - `test_semantic_safety.py` — Negative tests: different system prompt, different intent, different model — all must miss cache
+- `test_mock_upstream.py` — 51 integration checks (admin routes, exact key deletion, cache hit/miss, streaming, tenant isolation)
+- `test_routing.py` — 60 checks (routing safety, headers, auth, fallback key)
+- `test_persistence_eviction_sse.py` — 24 checks (disk persistence, eviction, SSE error handling)
+- `test_demo.py` — 60-second demo
+- `benchmark.py` — Latency comparison across cache modes
 - `model/` — BGE model files (config.json, tokenizer.json, 133MB model.safetensors). Gitignored safetensors.
 - `.cargo/config.toml` — MSVC linker path override
+- `.env.example` — Template for config file
 
 ### Docs
-- `docs/superpowers/plans/2026-06-28-corrected-proxy-architecture.md` — Full implementation plan
+- `docs/superpowers/specs/2026-06-30-config-admin-metrics-design.md` — v0.2.1 design spec (TOML config, admin routes, metrics)
+- `docs/superpowers/plans/2026-06-30-config-admin-metrics-plan.md` — v0.2.1 implementation plan
+- `docs/superpowers/plans/2026-06-28-corrected-proxy-architecture.md` — Original architecture plan
+- `docs/deployment.md` — Production deployment guide
+- `docs/release-checklist.md` — Pre-release verification steps
 - `landing/` — Static landing page for stackintercept.com (index.html + vercel.json)
 
 ## Key Architecture Decisions
@@ -80,6 +90,16 @@ python test_routing.py     # requires STACK_INTERCEPT_ALLOW_MODEL_REWRITE tests
 | `STACK_INTERCEPT_UPSTREAM_URL` | `https://api.deepseek.com` | Primary LLM provider base URL |
 | `STACK_INTERCEPT_FALLBACK_URL` | `https://api.deepseek.com` | Fallback (cheap) provider base URL for routed requests |
 | `STACK_INTERCEPT_FALLBACK_API_KEY` | (from `DEEPSEEK_API_KEY`) | API key for fallback provider |
+| `STACK_INTERCEPT_ADMIN_KEY` | (none) | Admin API auth key (required on remote) |
+| `STACK_INTERCEPT_EXACT_MAX_ENTRIES` | `20000` | Max exact cache entries |
+| `STACK_INTERCEPT_EXACT_TTL_SECS` | `3600` | Exact cache TTL (seconds) |
+| `STACK_INTERCEPT_SEMANTIC_MAX_ITEMS` | `10000` | Max semantic cache items |
+| `STACK_INTERCEPT_SEMANTIC_MAX_BUCKET_ITEMS` | `256` | Max items per semantic bucket |
+| `STACK_INTERCEPT_SEMANTIC_TTL_SECS` | `3600` | Semantic cache TTL (seconds) |
+| `STACK_INTERCEPT_CACHE_PATH` | (none) | File path for disk persistence |
+| `STACK_INTERCEPT_DISABLE_PERSISTENCE` | `false` | Skip disk I/O for cache snapshots |
+
+Config file (`stack-intercept.toml`) is also supported. Loading order: defaults → TOML → env vars. Env vars always win.
 
 ### Route headers (all responses)
 - `x-stack-intercept-route`: `passthrough` or `fallback`
@@ -101,6 +121,8 @@ Set `x-stack-intercept-no-route: true` on any request to bypass routing entirely
 - `candle-core 0.8`, `candle-nn 0.8`, `candle-transformers 0.8` — Local ML inference
 - `tokenizers 0.19` — BGE tokenizer
 - `sha2 0.10` — Deterministic cache key hashing
+- `rmp-serde` — MessagePack serialization for disk snapshot persistence
+- `toml 0.8` — Config file parsing
 - `fast-hnsw 1.0` — Unused, placeholder for HNSW index
 - `serde/serde_json`, `tokio`, `futures-util`, `tracing`, `anyhow`
 
