@@ -62,8 +62,8 @@ Pre-built binaries for Linux and Windows on the [Releases page](https://github.c
 
 ```bash
 # Linux
-curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.1.1/stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
-tar xzf stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.2.1/stack-intercept-v0.2.1-x86_64-unknown-linux-gnu.tar.gz
+tar xzf stack-intercept-v0.2.1-x86_64-unknown-linux-gnu.tar.gz
 cd stack-intercept
 
 # Windows — download the .zip from the Releases page and extract
@@ -150,6 +150,56 @@ cargo run
 | `STACK_INTERCEPT_ALLOW_MODEL_REWRITE` | `false` | Enable model routing (opt-in) |
 | `STACK_INTERCEPT_FALLBACK_URL` | `https://api.deepseek.com` | Fallback provider for routed requests |
 | `STACK_INTERCEPT_FALLBACK_API_KEY` | (from `DEEPSEEK_API_KEY`) | API key for fallback provider |
+| `STACK_INTERCEPT_ADMIN_KEY` | (none) | Admin API auth key (required on remote) |
+| `STACK_INTERCEPT_EXACT_MAX_ENTRIES` | `20000` | Max exact cache entries |
+| `STACK_INTERCEPT_EXACT_TTL_SECS` | `3600` | Exact cache TTL (seconds) |
+| `STACK_INTERCEPT_SEMANTIC_MAX_ITEMS` | `10000` | Max semantic cache items |
+| `STACK_INTERCEPT_SEMANTIC_TTL_SECS` | `3600` | Semantic cache TTL (seconds) |
+| `STACK_INTERCEPT_CACHE_PATH` | (none) | File path for disk persistence |
+| `STACK_INTERCEPT_DISABLE_PERSISTENCE` | `false` | Skip disk I/O for cache snapshots |
+
+### TOML config file
+
+All env vars can also be set via `stack-intercept.toml` in the working directory. The loading order is:
+
+```
+hardcoded defaults → stack-intercept.toml → env vars
+```
+
+Env vars always win. Explicit path via `STACK_INTERCEPT_CONFIG=./path/to/config.toml`.
+
+```toml
+cache_mode = "exact"
+upstream_url = "https://api.deepseek.com"
+exact_max_entries = 20000
+exact_ttl_secs = 3600
+cache_path = "cache.bin"
+```
+
+Missing config file is silent (defaults apply). Invalid TOML or unknown keys fail at startup.
+
+## Admin API
+
+All admin routes live under `/admin/`. Local-only by default; require `x-admin-key` header when bound to a remote address.
+
+| Route | Method | Description |
+|---|---|---|
+| `/admin/metrics` | GET | Hit/miss counters, uptime, routing stats |
+| `/admin/cache` | GET | Cache summary (entries, limits, TTL) |
+| `/admin/cache` | DELETE | Flush all caches, write empty snapshot |
+| `/admin/cache/exact/:key` | DELETE | Evict single exact cache entry |
+| `/admin/cache/semantic/:context_key` | DELETE | Evict single semantic bucket |
+
+```bash
+# Metrics (loopback: no auth needed)
+curl http://127.0.0.1:8080/admin/metrics
+
+# Cache summary
+curl http://127.0.0.1:8080/admin/cache
+
+# Flush all caches
+curl -X DELETE http://127.0.0.1:8080/admin/cache
+```
 
 ## Architecture
 
@@ -202,8 +252,9 @@ cargo build --release
 cargo run
 
 # Test (no API key, no model weights needed)
-python test_mock_upstream.py    # 24 tests — exact cache, streaming, tenant isolation
-python test_routing.py          # 60 tests — routing safety, headers, auth, fallback key
+python test_mock_upstream.py    # 51 checks — exact cache, streaming, tenant isolation, admin API
+python test_routing.py          # 60 checks — routing safety, headers, auth, fallback key
+python test_persistence_eviction_sse.py  # 24 checks — persistence, eviction, SSE errors
 ```
 
 ## Demo
