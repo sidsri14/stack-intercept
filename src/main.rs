@@ -104,6 +104,12 @@ async fn main() {
 
     let config = ProxyConfig::from_env();
     println!("Cache mode: {:?}", config.cache_mode);
+    if config.admin_key.is_some() {
+        println!("Admin key: configured");
+    }
+    if config.fallback_api_key.is_some() {
+        println!("Fallback API key: configured");
+    }
 
     let predictor = if config.cache_mode == config::CacheMode::Semantic {
         println!("Initializing BGE Local Embedding Weights...");
