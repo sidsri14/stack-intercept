@@ -10,13 +10,14 @@ use crate::embeddings::LocalPredictor;
 use crate::router::evaluate_routing;
 use axum::{
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, State},
+    extract::{ConnectInfo, DefaultBodyLimit, State},
     http::response::Builder as ResponseBuilder,
     http::{HeaderMap, Response, StatusCode},
     response::IntoResponse,
     routing::post,
     Json, Router,
 };
+use serde::Serialize;
 use dashmap::DashMap;
 use futures_util::stream;
 use futures_util::StreamExt;
@@ -238,8 +239,22 @@ async fn main() {
     }
 
     let server_state = shared_state.clone();
+    let admin_router = Router::new()
+        .route("/metrics", axum::routing::get(admin_metrics))
+        .route("/cache", axum::routing::get(admin_cache_summary))
+        .route("/cache", axum::routing::delete(admin_cache_flush))
+        .route(
+            "/cache/exact/:key",
+            axum::routing::delete(admin_cache_exact_delete),
+        )
+        .route(
+            "/cache/semantic/:context_key",
+            axum::routing::delete(admin_cache_semantic_delete),
+        );
+
     let app = Router::new()
         .route("/v1/chat/completions", post(handle_intercept))
+        .nest("/admin", admin_router)
         .layer(DefaultBodyLimit::max(shared_state.config.max_body_size))
         .with_state(shared_state);
 
@@ -247,7 +262,10 @@ async fn main() {
     println!("StackIntercept online at http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app)
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
         .with_graceful_shutdown(async move {
             tokio::signal::ctrl_c().await.ok();
             println!("Shutting down, flushing cache to disk...");
@@ -397,6 +415,198 @@ fn flush_persistence(state: &AppState) {
     };
     let (exact_entries, semantic_entries, _now) = collect_snapshot_data(state);
     write_snapshot_to_disk(&cache_path, exact_entries, semantic_entries);
+}
+
+/// Check if a peer address is a loopback address (127.0.0.1 or ::1).
+fn is_loopback(addr: &SocketAddr) -> bool {
+    addr.ip().is_loopback()
+}
+
+/// Check admin auth. Returns Ok(()) or a 403 StatusCode.
+fn check_admin_auth(
+    headers: &HeaderMap,
+    addr: SocketAddr,
+    config: &ProxyConfig,
+) -> Result<(), StatusCode> {
+    // If admin_key is set, it's always required
+    if let Some(ref key) = config.admin_key {
+        let provided = headers
+            .get("x-admin-key")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if provided != key {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        return Ok(());
+    }
+    // No admin key: only allow loopback peers
+    if !is_loopback(&addr) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct MetricsResponse {
+    uptime_secs: u64,
+    exact_hits: u64,
+    semantic_hits: u64,
+    misses: u64,
+    upstream_errors: u64,
+    routed_fallback: u64,
+    routed_passthrough: u64,
+    cache_inserts_exact: u64,
+    cache_inserts_semantic: u64,
+}
+
+#[derive(Serialize)]
+struct CacheSummaryExact {
+    entries: usize,
+    max_entries: usize,
+    ttl_secs: u64,
+}
+
+#[derive(Serialize)]
+struct CacheSummarySemantic {
+    buckets: usize,
+    entries: usize,
+    max_items: usize,
+    max_bucket_items: usize,
+    ttl_secs: u64,
+}
+
+#[derive(Serialize)]
+struct CacheSummaryResponse {
+    exact: CacheSummaryExact,
+    semantic: CacheSummarySemantic,
+}
+
+async fn admin_metrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if let Err(status) = check_admin_auth(&headers, addr, &state.config) {
+        return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let m = &state.metrics;
+    let resp = MetricsResponse {
+        uptime_secs: m.started_at.elapsed().as_secs(),
+        exact_hits: m.exact_hits.load(Ordering::Relaxed),
+        semantic_hits: m.semantic_hits.load(Ordering::Relaxed),
+        misses: m.misses.load(Ordering::Relaxed),
+        upstream_errors: m.upstream_errors.load(Ordering::Relaxed),
+        routed_fallback: m.routed_fallback.load(Ordering::Relaxed),
+        routed_passthrough: m.routed_passthrough.load(Ordering::Relaxed),
+        cache_inserts_exact: m.cache_inserts_exact.load(Ordering::Relaxed),
+        cache_inserts_semantic: m.cache_inserts_semantic.load(Ordering::Relaxed),
+    };
+    (StatusCode::OK, Json(resp)).into_response()
+}
+
+async fn admin_cache_summary(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if let Err(status) = check_admin_auth(&headers, addr, &state.config) {
+        return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let exact = state.exact_cache.read().unwrap();
+    let semantic_buckets = state.index.len();
+    let semantic_entries: usize = state.index.iter().map(|e| e.value().len()).sum();
+    let resp = CacheSummaryResponse {
+        exact: CacheSummaryExact {
+            entries: exact.len(),
+            max_entries: exact.max_entries(),
+            ttl_secs: exact.default_ttl_secs(),
+        },
+        semantic: CacheSummarySemantic {
+            buckets: semantic_buckets,
+            entries: semantic_entries,
+            max_items: state.config.semantic_max_items,
+            max_bucket_items: state.config.semantic_max_bucket_items,
+            ttl_secs: state.config.semantic_ttl_secs,
+        },
+    };
+    (StatusCode::OK, Json(resp)).into_response()
+}
+
+async fn admin_cache_flush(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if let Err(status) = check_admin_auth(&headers, addr, &state.config) {
+        return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    // Clear exact cache
+    state.exact_cache.write().unwrap().clear();
+    // Clear semantic index
+    state.index.clear();
+    // Force write empty snapshot to disk
+    if !state.config.disable_persistence {
+        if let Some(ref path) = state.config.cache_path {
+            let empty_snapshot = crate::cache::Snapshot {
+                exact_entries: vec![],
+                semantic_entries: vec![],
+            };
+            match rmp_serde::to_vec(&empty_snapshot) {
+                Ok(bytes) => {
+                    let tmp_path = format!("{}.tmp", path);
+                    if std::fs::write(&tmp_path, &bytes).is_ok() {
+                        if std::fs::rename(&tmp_path, path).is_err() {
+                            eprintln!("Failed to rename empty snapshot to {}", path);
+                        }
+                    } else {
+                        eprintln!("Failed to write empty snapshot to {}", tmp_path);
+                    }
+                }
+                Err(e) => eprintln!("Failed to serialize empty snapshot: {}", e),
+            }
+        }
+    }
+    let resp = CacheSummaryResponse {
+        exact: CacheSummaryExact {
+            entries: 0,
+            max_entries: state.exact_cache.read().unwrap().max_entries(),
+            ttl_secs: state.exact_cache.read().unwrap().default_ttl_secs(),
+        },
+        semantic: CacheSummarySemantic {
+            buckets: 0,
+            entries: 0,
+            max_items: state.config.semantic_max_items,
+            max_bucket_items: state.config.semantic_max_bucket_items,
+            ttl_secs: state.config.semantic_ttl_secs,
+        },
+    };
+    (StatusCode::OK, Json(resp)).into_response()
+}
+
+async fn admin_cache_exact_delete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    axum::extract::Path(key): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if let Err(status) = check_admin_auth(&headers, addr, &state.config) {
+        return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let removed = state.exact_cache.write().unwrap().remove(&key);
+    (StatusCode::OK, Json(serde_json::json!({"removed": removed}))).into_response()
+}
+
+async fn admin_cache_semantic_delete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    axum::extract::Path(context_key): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if let Err(status) = check_admin_auth(&headers, addr, &state.config) {
+        return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+    let existed = state.index.remove(&context_key).is_some();
+    (StatusCode::OK, Json(serde_json::json!({"removed": existed}))).into_response()
 }
 
 async fn handle_intercept(
