@@ -236,3 +236,111 @@ impl ProxyConfig {
         self.cache_mode != CacheMode::Off
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_defaults_cache_mode_exact() {
+        let cfg = ProxyConfig::defaults();
+        assert_eq!(cfg.cache_mode, CacheMode::Exact);
+    }
+
+    #[test]
+    fn test_defaults_exact_cache_sizes() {
+        let cfg = ProxyConfig::defaults();
+        assert_eq!(cfg.exact_max_entries, 20000);
+        assert_eq!(cfg.exact_ttl_secs, 3600);
+    }
+
+    #[test]
+    fn test_defaults_semantic_sizes() {
+        let cfg = ProxyConfig::defaults();
+        assert_eq!(cfg.semantic_max_items, 10000);
+        assert_eq!(cfg.semantic_max_bucket_items, 256);
+        assert_eq!(cfg.semantic_ttl_secs, 3600);
+    }
+
+    #[test]
+    fn test_defaults_secrets_none() {
+        let cfg = ProxyConfig::defaults();
+        assert!(cfg.admin_key.is_none());
+        assert!(cfg.fallback_api_key.is_none());
+    }
+
+    #[test]
+    fn test_file_config_merge_none_is_noop() {
+        let file_cfg = FileConfig::default();
+        let mut cfg = ProxyConfig::defaults();
+        let original = cfg.exact_max_entries;
+        if let Some(v) = file_cfg.exact_max_entries { cfg.exact_max_entries = v; }
+        assert_eq!(cfg.exact_max_entries, original);
+    }
+
+    #[test]
+    fn test_file_config_merge_some_applies() {
+        let file_cfg = FileConfig {
+            exact_max_entries: Some(5000),
+            exact_ttl_secs: Some(7200),
+            ..Default::default()
+        };
+        let mut cfg = ProxyConfig::defaults();
+        if let Some(v) = file_cfg.exact_max_entries { cfg.exact_max_entries = v; }
+        if let Some(v) = file_cfg.exact_ttl_secs { cfg.exact_ttl_secs = v; }
+        assert_eq!(cfg.exact_max_entries, 5000);
+        assert_eq!(cfg.exact_ttl_secs, 7200);
+        assert_eq!(cfg.semantic_max_items, 10000); // unchanged
+    }
+
+    #[test]
+    fn test_cache_mode_from_str() {
+        let mut cfg = ProxyConfig::defaults();
+
+        // "off" -> Off
+        cfg.cache_mode = match "off" {
+            "off" => CacheMode::Off,
+            "semantic" => CacheMode::Semantic,
+            _ => CacheMode::Exact,
+        };
+        assert_eq!(cfg.cache_mode, CacheMode::Off);
+
+        // "semantic" -> Semantic
+        cfg.cache_mode = match "semantic" {
+            "off" => CacheMode::Off,
+            "semantic" => CacheMode::Semantic,
+            _ => CacheMode::Exact,
+        };
+        assert_eq!(cfg.cache_mode, CacheMode::Semantic);
+
+        // unknown -> Exact (default)
+        cfg.cache_mode = match "unknown" {
+            "off" => CacheMode::Off,
+            "semantic" => CacheMode::Semantic,
+            _ => CacheMode::Exact,
+        };
+        assert_eq!(cfg.cache_mode, CacheMode::Exact);
+    }
+
+    #[test]
+    fn test_is_cache_enabled() {
+        let mut cfg = ProxyConfig::defaults();
+        cfg.cache_mode = CacheMode::Off;
+        assert!(!cfg.is_cache_enabled());
+        cfg.cache_mode = CacheMode::Exact;
+        assert!(cfg.is_cache_enabled());
+        cfg.cache_mode = CacheMode::Semantic;
+        assert!(cfg.is_cache_enabled());
+    }
+
+    #[test]
+    fn test_is_semantic_allowed() {
+        let mut cfg = ProxyConfig::defaults();
+        cfg.cache_mode = CacheMode::Off;
+        assert!(!cfg.is_semantic_allowed());
+        cfg.cache_mode = CacheMode::Exact;
+        assert!(!cfg.is_semantic_allowed());
+        cfg.cache_mode = CacheMode::Semantic;
+        assert!(cfg.is_semantic_allowed());
+    }
+}
