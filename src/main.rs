@@ -678,6 +678,12 @@ async fn handle_intercept(
     };
     let routed_model = &route.final_model;
 
+    if route.needs_fallback_key {
+        state.metrics.routed_fallback.fetch_add(1, Ordering::Relaxed);
+    } else {
+        state.metrics.routed_passthrough.fetch_add(1, Ordering::Relaxed);
+    }
+
     // Build routing namespace for cache key isolation (always present —
     // passthrough and fallback each get a unique, versioned namespace so
     // future routing policy changes don't accidentally share cache keys).
@@ -703,6 +709,7 @@ async fn handle_intercept(
             let cache = state.exact_cache.read().unwrap();
             if let Some(entry) = cache.get(key_hash) {
                 println!("Exact cache HIT for key {}", &key_hash[..12]);
+                state.metrics.exact_hits.fetch_add(1, Ordering::Relaxed);
                 let cached = entry.response_body.clone();
                 if is_streaming {
                     let stream = futures_util::stream::once(async move {
@@ -777,6 +784,7 @@ async fn handle_intercept(
                     let score = compute_vector_dot(target_vec, &item.vector);
                     if score >= ALIGNMENT_BAR {
                         println!("Semantic HIT! Similarity: {:.4}", score);
+                        state.metrics.semantic_hits.fetch_add(1, Ordering::Relaxed);
                         let cached = item.completion_response.clone();
                         if is_streaming {
                             let stream = futures_util::stream::once(async move {
@@ -834,6 +842,8 @@ async fn handle_intercept(
         orig_auth.to_string()
     };
 
+    state.metrics.misses.fetch_add(1, Ordering::Relaxed);
+
     let upstream_res = state
         .client
         .post(&route.final_url)
@@ -889,6 +899,7 @@ async fn handle_intercept(
                                     .write()
                                     .unwrap()
                                     .insert(key_hash.clone(), final_bytes.clone());
+                                state_clone.metrics.cache_inserts_exact.fetch_add(1, Ordering::Relaxed);
                                 println!("Stream cached (exact).");
                                 persist_after_insert(&state_clone);
                             }
@@ -908,6 +919,7 @@ async fn handle_intercept(
                                 };
                                 // Push first, then evict — avoids max+1 off-by-one
                                 bucket.push(item);
+                                state_clone.metrics.cache_inserts_semantic.fetch_add(1, Ordering::Relaxed);
                                 evict_bucket(
                                     &mut bucket,
                                     state_clone.config.semantic_max_bucket_items,
@@ -955,6 +967,7 @@ async fn handle_intercept(
                             .write()
                             .unwrap()
                             .insert(key_hash.clone(), bytes.to_vec());
+                        state.metrics.cache_inserts_exact.fetch_add(1, Ordering::Relaxed);
                     }
                     persist_after_insert(&state);
                 }
@@ -970,6 +983,7 @@ async fn handle_intercept(
                         let mut bucket = state.index.entry(context_key.clone()).or_default();
                         // Push first, then evict — avoids max+1 off-by-one
                         bucket.push(item);
+                        state.metrics.cache_inserts_semantic.fetch_add(1, Ordering::Relaxed);
                         evict_bucket(&mut bucket, state.config.semantic_max_bucket_items);
                         if total_semantic_entries(&state.index) > state.config.semantic_max_items {
                             evict_global(&state.index, state.config.semantic_max_items);
@@ -992,6 +1006,7 @@ async fn handle_intercept(
             .into_response()
         }
         Err(_) => {
+            state.metrics.upstream_errors.fetch_add(1, Ordering::Relaxed);
             let body: Body = if is_streaming {
                 Body::from(format!(
                     "data: {}\n\ndata: [DONE]\n\n",
