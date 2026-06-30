@@ -245,6 +245,152 @@ impl ProxyConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes config tests that modify env vars (cargo test runs in parallel).
+    static CONFIG_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    // Test 1a: Subprocess helper — only runs when invoked by
+    // test_config_file_missing_exits via subprocess. Do not run standalone.
+    // This function calls ProxyConfig::load() with STACK_INTERCEPT_CONFIG
+    // pointing to a non-existent file, which triggers process::exit(1).
+    // We detect this by checking if STACK_INTERCEPT_CONFIG is set (indicating
+    // we're running as a subprocess rather than standalone).
+    #[test]
+    fn config_fatal_missing_file_subprocess_check() {
+        // Only run when STACK_INTERCEPT_CONFIG signals a missing file.
+        let config_path = match std::env::var("STACK_INTERCEPT_CONFIG") {
+            Ok(p) if p.contains("does-not-exist") => p,
+            _ => return, // Skip when run standalone
+        };
+        // If the file actually exists, skip (someone might have created it)
+        if std::path::Path::new(&config_path).exists() {
+            return;
+        }
+        // This will call process::exit(1) because the file doesn't exist.
+        // If it returns, the test fails.
+        ProxyConfig::load();
+        panic!("ProxyConfig::load() should have called process::exit(1) for missing config file");
+    }
+
+    // Test 1b: Verify that explicit STACK_INTERCEPT_CONFIG + missing file → exit(1).
+    #[test]
+    fn test_config_file_missing_exits() {
+        let _lock = CONFIG_TEST_MUTEX.lock().unwrap();
+
+        let exe = std::env::current_exe().unwrap();
+        let output = std::process::Command::new(&exe)
+            .env("STACK_INTERCEPT_CONFIG", "/tmp/__stack_intercept_does-not-exist-test.toml")
+            .args(&["config_fatal_missing_file_subprocess_check", "--nocapture"])
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "Expected exit code 1 (process::exit) for missing config file; got success"
+        );
+    }
+
+    // Test 2: TOML file values are loaded via apply_file_config.
+    #[test]
+    fn test_config_file_values_loaded() {
+        let _lock = CONFIG_TEST_MUTEX.lock().unwrap();
+
+        let dir = std::env::temp_dir().join(format!("stack_intercept_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let toml_path = dir.join("test_config.toml");
+        let toml_content = r#"
+            upstream_url = "https://custom-upstream.example.com"
+            exact_max_entries = 5000
+            exact_ttl_secs = 7200
+            cache_mode = "semantic"
+            tenant_id_header = "X-Custom-Tenant"
+            allow_model_rewrite = true
+        "#;
+        std::fs::write(&toml_path, toml_content).expect("failed to write test TOML");
+
+        // Save old env var and set new one
+        let old_val = std::env::var("STACK_INTERCEPT_CONFIG").ok();
+        std::env::set_var(
+            "STACK_INTERCEPT_CONFIG",
+            toml_path.to_str().unwrap(),
+        );
+
+        let cfg = ProxyConfig::load();
+
+        // Restore old env var
+        match old_val {
+            Some(v) => std::env::set_var("STACK_INTERCEPT_CONFIG", v),
+            None => std::env::remove_var("STACK_INTERCEPT_CONFIG"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(cfg.upstream_base_url, "https://custom-upstream.example.com");
+        assert_eq!(cfg.exact_max_entries, 5000);
+        assert_eq!(cfg.exact_ttl_secs, 7200);
+        assert_eq!(cfg.cache_mode, CacheMode::Semantic);
+        assert_eq!(cfg.tenant_id_header, Some("X-Custom-Tenant".to_string()));
+        assert!(cfg.allow_model_rewrite);
+    }
+
+    // Test 3: Env vars override TOML values.
+    #[test]
+    fn test_env_overrides_toml() {
+        let _lock = CONFIG_TEST_MUTEX.lock().unwrap();
+
+        let dir = std::env::temp_dir().join(format!("stack_intercept_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let toml_path = dir.join("test_override.toml");
+        let toml_content = r#"
+            exact_max_entries = 5000
+            exact_ttl_secs = 3600
+        "#;
+        std::fs::write(&toml_path, toml_content).expect("failed to write test TOML");
+
+        let old_cfg = std::env::var("STACK_INTERCEPT_CONFIG").ok();
+        let old_max = std::env::var("STACK_INTERCEPT_EXACT_MAX_ENTRIES").ok();
+        let old_ttl = std::env::var("STACK_INTERCEPT_EXACT_TTL_SECS").ok();
+
+        std::env::set_var("STACK_INTERCEPT_CONFIG", toml_path.to_str().unwrap());
+        std::env::set_var("STACK_INTERCEPT_EXACT_MAX_ENTRIES", "9999");
+        std::env::remove_var("STACK_INTERCEPT_EXACT_TTL_SECS");
+
+        let cfg = ProxyConfig::load();
+
+        // Restore env vars
+        match old_cfg {
+            Some(v) => std::env::set_var("STACK_INTERCEPT_CONFIG", v),
+            None => std::env::remove_var("STACK_INTERCEPT_CONFIG"),
+        }
+        match old_max {
+            Some(v) => std::env::set_var("STACK_INTERCEPT_EXACT_MAX_ENTRIES", v),
+            None => std::env::remove_var("STACK_INTERCEPT_EXACT_MAX_ENTRIES"),
+        }
+        match old_ttl {
+            Some(v) => std::env::set_var("STACK_INTERCEPT_EXACT_TTL_SECS", v),
+            None => std::env::remove_var("STACK_INTERCEPT_EXACT_TTL_SECS"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Env (9999) should override TOML (5000)
+        assert_eq!(cfg.exact_max_entries, 9999);
+        // TOML value should apply since no env var set
+        assert_eq!(cfg.exact_ttl_secs, 3600);
+    }
+
+    // Test 4: Unknown TOML key fails (deny_unknown_fields).
+    #[test]
+    fn test_unknown_toml_key_fails() {
+        let result: Result<FileConfig, _> = toml::from_str(r#"
+            unknown_field = "this should fail"
+        "#);
+        assert!(result.is_err(), "deny_unknown_fields should reject unknown keys");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("unknown_field") || err_msg.contains("unknown field"),
+            "Error should mention the unknown field, got: {}",
+            err_msg
+        );
+    }
 
     #[test]
     fn test_defaults_cache_mode_exact() {

@@ -6,6 +6,8 @@ StackIntercept proxy pointing at the mock, sends requests and verifies
 exact cache hit/miss behavior — all without API keys or model weights.
 """
 
+from http.client import HTTPMessage
+import hashlib
 import http.server
 import json
 import os
@@ -430,6 +432,67 @@ def run_admin_tests():
     status, body, _ = send_admin_delete("/cache/exact/nonexistentkey")
     check("delete nonexistent key returns removed: false", body.get("removed") == False)
     print()
+
+    print("=" * 60)
+    print("Test 14: DELETE /admin/cache/exact/:key removes a real cached key")
+    # Compute the exact cache key hash that the Rust proxy uses,
+    # then delete it and verify the cached entry is removed.
+    key_payload = {
+        "model": "mock-model",
+        "messages": [{"role": "user", "content": "Key deletion test"}],
+        "temperature": 0,
+    }
+    computed_hash = compute_exact_cache_key(
+        key_payload,
+        upstream_url=f"http://127.0.0.1:{MOCK_PORT}",
+    )
+
+    # First request: miss
+    hit, status, _ = send_request(key_payload)
+    check("first request is miss", hit != "hit", f"(got: {hit})")
+
+    # Second request: hit (cached)
+    hit, _, _ = send_request(key_payload)
+    check("second request is hit (cached)", hit == "hit", f"(got: {hit})")
+
+    # Delete by computed hash
+    status, body, _ = send_admin_delete(f"/cache/exact/{computed_hash}")
+    check("delete returns status 200", status == 200, f"(status: {status})")
+    check("delete removed: true", body.get("removed") == True,
+          f"(got removed={body.get('removed')}, hash={computed_hash[:16]}...)")
+
+    # Should miss again (was deleted)
+    hit, _, _ = send_request(key_payload)
+    check("miss after exact key deletion", hit != "hit", f"(got: {hit})")
+
+    # Next request should hit (re-cached)
+    hit, _, _ = send_request(key_payload)
+    check("hit after re-caching", hit == "hit", f"(got: {hit})")
+    print()
+
+
+def compute_exact_cache_key(payload, upstream_url=None, tenant_id=None):
+    """Replicate the Rust cache_key_hash() computation for exact cache lookups.
+
+    The Rust side computes:
+        SHA256(extract_hostname(upstream_url) + tenant_id + routing_namespace + canonical_json(payload))
+
+    For passthrough (no routing), routing_namespace is:
+        v1|passthrough|<host:port>|<model>
+
+    The payload must be cache-eligible (temperature=0, no tools, etc.).
+    """
+    hostname = upstream_url.replace("https://", "").replace("http://", "").split("/")[0]
+    model = payload.get("model", "mock-model")
+    routing_namespace = f"v1|passthrough|{hostname}|{model}"
+
+    hash_input = hostname
+    if tenant_id:
+        hash_input += tenant_id
+    hash_input += routing_namespace
+    hash_input += json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    return hashlib.sha256(hash_input.encode()).hexdigest()
 
 
 def reset_mock_count():

@@ -1031,3 +1031,89 @@ async fn handle_intercept(
         }
     }
 }
+
+#[cfg(test)]
+mod admin_auth_tests {
+    use super::*;
+    use crate::config::ProxyConfig;
+
+    #[test]
+    fn test_is_loopback_true() {
+        let addr4 = SocketAddr::from(([127, 0, 0, 1], 8080));
+        assert!(is_loopback(&addr4));
+        let addr6 = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 8080));
+        assert!(is_loopback(&addr6));
+    }
+
+    #[test]
+    fn test_is_loopback_false() {
+        let addr = SocketAddr::from(([192, 168, 1, 1], 8080));
+        assert!(!is_loopback(&addr));
+        let addr2 = SocketAddr::from(([10, 0, 0, 1], 8080));
+        assert!(!is_loopback(&addr2));
+    }
+
+    // Test 5: Admin auth localhost allowed without key
+    #[test]
+    fn test_admin_auth_loopback_allowed_no_key() {
+        let cfg = ProxyConfig::defaults(); // admin_key = None
+        let headers = HeaderMap::new();
+        let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+        let result = check_admin_auth(&headers, addr, &cfg);
+        assert!(result.is_ok(), "loopback without key should be allowed, got: {:?}", result);
+    }
+
+    // Test 6: Admin auth non-loopback forbidden without key
+    #[test]
+    fn test_admin_auth_non_loopback_forbidden_no_key() {
+        let cfg = ProxyConfig::defaults();
+        let headers = HeaderMap::new();
+        let addr = SocketAddr::from(([192, 168, 1, 1], 12345));
+        let result = check_admin_auth(&headers, addr, &cfg);
+        assert_eq!(result, Err(StatusCode::FORBIDDEN));
+    }
+
+    // Test 7: Admin auth key behavior
+    #[test]
+    fn test_admin_auth_correct_key_non_loopback() {
+        let mut cfg = ProxyConfig::defaults();
+        cfg.admin_key = Some("secret123".to_string());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-admin-key", "secret123".parse().unwrap());
+        let addr = SocketAddr::from(([10, 0, 0, 1], 12345));
+        let result = check_admin_auth(&headers, addr, &cfg);
+        assert!(result.is_ok(), "correct key on non-loopback should be allowed, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_admin_auth_wrong_key_non_loopback() {
+        let mut cfg = ProxyConfig::defaults();
+        cfg.admin_key = Some("secret123".to_string());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-admin-key", "wrong".parse().unwrap());
+        let addr = SocketAddr::from(([10, 0, 0, 1], 12345));
+        let result = check_admin_auth(&headers, addr, &cfg);
+        assert_eq!(result, Err(StatusCode::FORBIDDEN));
+    }
+
+    #[test]
+    fn test_admin_auth_missing_key_non_loopback() {
+        let mut cfg = ProxyConfig::defaults();
+        cfg.admin_key = Some("secret123".to_string());
+        let headers = HeaderMap::new();
+        let addr = SocketAddr::from(([10, 0, 0, 1], 12345));
+        let result = check_admin_auth(&headers, addr, &cfg);
+        assert_eq!(result, Err(StatusCode::FORBIDDEN));
+    }
+
+    #[test]
+    fn test_admin_auth_correct_key_loopback() {
+        let mut cfg = ProxyConfig::defaults();
+        cfg.admin_key = Some("secret123".to_string());
+        let mut headers = HeaderMap::new();
+        headers.insert("x-admin-key", "secret123".parse().unwrap());
+        let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+        let result = check_admin_auth(&headers, addr, &cfg);
+        assert!(result.is_ok(), "correct key on loopback should be allowed, got: {:?}", result);
+    }
+}
