@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.2.1] - 2026-06-30
+
+### Added
+- TOML config file support (`stack-intercept.toml`)
+  - Config file path via `STACK_INTERCEPT_CONFIG` env var
+  - Precedence: defaults < TOML < env vars
+  - `#[serde(deny_unknown_fields)]` catches typos in config
+  - Explicit path missing → fatal error; default path missing → silent skip
+- Configurable exact cache limits via config file or env vars
+  - `exact_max_entries` (default 20000)
+  - `exact_ttl_secs` (default 3600)
+- Admin HTTP routes under `/admin/`:
+  - `GET /admin/metrics` — cache hit/miss/routing counters and uptime
+  - `GET /admin/cache` — cache summary (entry counts, limits, TTL)
+  - `DELETE /admin/cache` — flush all caches and persist empty snapshot
+  - `DELETE /admin/cache/exact/:key` — evict a single exact cache entry
+  - `DELETE /admin/cache/semantic/:context_key` — evict a semantic context bucket
+- Admin route auth: loopback-open by default, key-required for remote access
+  - Configurable via `STACK_INTERCEPT_ADMIN_KEY` env var or `admin_key` in TOML
+  - `ConnectInfo<SocketAddr>` peer address check (no X-Forwarded-For trust)
+- Request-level metrics via atomic counters (`AtomicU64`, `Ordering::Relaxed`):
+  - exact_hits, semantic_hits, misses, upstream_errors
+  - routed_fallback, routed_passthrough
+  - cache_inserts_exact, cache_inserts_semantic
+
+### Changed
+- `ProxyConfig` refactored into layered config pipeline:
+  `defaults() → apply_file_config() → apply_env_overrides()`
+- `ExactCache::new()` now reads limits from config instead of hardcoded values
+- Secrets (admin_key, fallback_api_key) masked in startup logs
+
+### Tests
+- 9 unit tests for config defaults, FileConfig merge, cache mode parsing
+- 6 integration tests for admin routes (metrics, cache, eviction, auth)
+
 ## [0.2.0] - 2026-06-29
 
 ### Added
