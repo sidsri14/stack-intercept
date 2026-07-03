@@ -189,6 +189,7 @@ All admin routes live under `/admin/`. Local-only by default; require `x-admin-k
 | `/admin/cache` | DELETE | Flush all caches, write empty snapshot |
 | `/admin/cache/exact/:key` | DELETE | Evict single exact cache entry |
 | `/admin/cache/semantic/:context_key` | DELETE | Evict single semantic bucket |
+| `/admin/config` | GET | Runtime config (secrets masked, doubles as health check) |
 
 ```bash
 # Metrics (loopback: no auth needed)
@@ -252,7 +253,7 @@ cargo build --release
 cargo run
 
 # Test (no API key, no model weights needed)
-python test_mock_upstream.py    # 51 checks — exact cache, streaming, tenant isolation, admin API
+python test_mock_upstream.py    # 59 checks — exact cache, streaming, tenant isolation, admin API
 python test_routing.py          # 60 checks — routing safety, headers, auth, fallback key
 python test_persistence_eviction_sse.py  # 24 checks — persistence, eviction, SSE errors
 ```

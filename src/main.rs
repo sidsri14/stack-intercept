@@ -256,7 +256,8 @@ async fn main() {
         .route(
             "/cache/semantic/:context_key",
             axum::routing::delete(admin_cache_semantic_delete),
-        );
+        )
+        .route("/config", axum::routing::get(admin_config));
 
     let app = Router::new()
         .route("/v1/chat/completions", post(handle_intercept))
@@ -622,6 +623,51 @@ async fn admin_cache_semantic_delete(
         Json(serde_json::json!({"removed": existed})),
     )
         .into_response()
+}
+
+async fn admin_config(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if let Err(status) = check_admin_auth(&headers, addr, &state.config) {
+        return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
+    }
+
+    let cache_mode_str = match state.config.cache_mode {
+        config::CacheMode::Off => "off",
+        config::CacheMode::Exact => "exact",
+        config::CacheMode::Semantic => "semantic",
+    };
+
+    let admin_key = state.config.admin_key.as_deref().map(|_| "********");
+
+    let fallback_api_key = state.config.fallback_api_key.as_ref().map(|k| {
+        if k.len() > 4 {
+            format!("{}*****", &k[..4])
+        } else {
+            "*****".to_string()
+        }
+    });
+
+    let resp = serde_json::json!({
+        "cache_mode": cache_mode_str,
+        "tenant_id_header": state.config.tenant_id_header,
+        "allow_model_rewrite": state.config.allow_model_rewrite,
+        "upstream_base_url": state.config.upstream_base_url,
+        "fallback_base_url": state.config.fallback_base_url,
+        "fallback_api_key": fallback_api_key,
+        "admin_key": admin_key,
+        "exact_max_entries": state.config.exact_max_entries,
+        "exact_ttl_secs": state.config.exact_ttl_secs,
+        "semantic_max_items": state.config.semantic_max_items,
+        "semantic_max_bucket_items": state.config.semantic_max_bucket_items,
+        "semantic_ttl_secs": state.config.semantic_ttl_secs,
+        "cache_path": state.config.cache_path,
+        "disable_persistence": state.config.disable_persistence,
+        "max_body_size": state.config.max_body_size,
+    });
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 async fn handle_intercept(

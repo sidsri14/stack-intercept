@@ -470,6 +470,30 @@ def run_admin_tests():
     check("hit after re-caching", hit == "hit", f"(got: {hit})")
     print()
 
+    print("=" * 60)
+    print("Test 15: GET /admin/config — returns 200 with expected keys")
+    status, body, _ = send_admin_get("/config")
+    check("admin/config status 200", status == 200, f"(status: {status})")
+    for key in ("cache_mode", "upstream_base_url", "exact_max_entries", "admin_key"):
+        check(f"admin/config has key '{key}'", key in body, f"(got keys: {list(body.keys())})")
+    print()
+
+    print("=" * 60)
+    print("Test 16: GET /admin/config — secrets are masked")
+    status, body, _ = send_admin_get("/config")
+    # No admin key configured in test, so it should be null.
+    # When configured, it should be "********".
+    check("admin/config admin_key is null (no key configured)",
+          body.get("admin_key") is None,
+          f"(got: {body.get('admin_key')!r})")
+    check("admin/config fallback_api_key is masked or null",
+          body.get("fallback_api_key") is None or body["fallback_api_key"].endswith("*****"),
+          f"(got: {body.get('fallback_api_key')!r})")
+    check("admin/config cache_mode is lowercase string",
+          isinstance(body.get("cache_mode"), str) and body["cache_mode"] == "exact",
+          f"(got: {body.get('cache_mode')!r})")
+    print()
+
 
 def compute_exact_cache_key(payload, upstream_url=None, tenant_id=None):
     """Replicate the Rust cache_key_hash() computation for exact cache lookups.

@@ -22,7 +22,7 @@ Routing is opt-in (`STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`). Cache keys inclu
 - `download_model.sh` — Fetches bge-small-en-v1.5 (config.json, tokenizer.json, model.safetensors) from HuggingFace
 - `test_proxy.py` — Two-prompt verification (cache miss, then exact/semantic hit)
 - `test_semantic_safety.py` — Negative tests: different system prompt, different intent, different model — all must miss cache
-- `test_mock_upstream.py` — 51 integration checks (admin routes, exact key deletion, cache hit/miss, streaming, tenant isolation)
+- `test_mock_upstream.py` — 59 integration checks (admin routes, exact key deletion, cache hit/miss, streaming, tenant isolation)
 - `test_routing.py` — 60 checks (routing safety, headers, auth, fallback key)
 - `test_persistence_eviction_sse.py` — 24 checks (disk persistence, eviction, SSE error handling)
 - `test_demo.py` — 60-second demo
