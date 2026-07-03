@@ -20,20 +20,32 @@ jobs:
 
   build:
     needs: [check]
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Configure MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - uses: Swatinem/rust-cache@v2
       - run: cargo check
       - run: cargo build
 
   integration:
     needs: [check, build]
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Configure MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build
       - name: Mock upstream integration tests
@@ -45,30 +57,58 @@ jobs:
 
   package:
     needs: [check, integration]
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+            binary: stack-intercept
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+            binary: stack-intercept.exe
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Configure MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
-      - run: strip target/release/stack-intercept
+      - name: Strip binary (Linux only)
+        if: runner.os == 'Linux'
+        run: strip target/release/${{ matrix.binary }}
       - name: Create package directory
         run: |
           mkdir -p dist/stack-intercept
-          cp target/release/stack-intercept dist/stack-intercept/
+          cp target/release/${{ matrix.binary }} dist/stack-intercept/
           cp .env.example README.md download_model.sh dist/stack-intercept/
           cp -r docs dist/stack-intercept/
-      - name: Create tarball
+      - name: Package Linux tarball
+        if: runner.os == 'Linux'
         run: |
           VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          tar czf "stack-intercept-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" -C dist stack-intercept
+          tar czf "stack-intercept-v${VERSION}-${{ matrix.target }}.tar.gz" -C dist stack-intercept
+      - name: Package Windows zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches.Groups[1].Value
+          Compress-Archive -Path dist\stack-intercept -DestinationPath "stack-intercept-v${version}-${{ matrix.target }}.zip"
       - name: Generate SHA256 checksum
+        shell: bash
         run: |
           VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          sha256sum "stack-intercept-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" > checksums.txt
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sha256sum "stack-intercept-v${VERSION}-${{ matrix.target }}.tar.gz" > checksums.txt
+          else
+            sha256sum "stack-intercept-v${VERSION}-${{ matrix.target }}.zip" > checksums.txt
+          fi
       - uses: actions/upload-artifact@v4
         with:
-          name: stack-intercept-linux-x86_64
+          name: stack-intercept-${{ matrix.target }}
           path: |
-            stack-intercept-*-x86_64-unknown-linux-gnu.tar.gz
+            stack-intercept-*-${{ matrix.target }}.*
             checksums.txt

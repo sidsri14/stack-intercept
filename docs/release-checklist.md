@@ -38,20 +38,17 @@
 
 ## Build
 
-### Windows
-```bash
-cargo build --release --target x86_64-pc-windows-msvc
-strip target/x86_64-pc-windows-msvc/release/stack-intercept.exe
-```
-
-### Linux (CI — automated)
-Linux binary is built automatically by the `release.yml` workflow when the tag is pushed.
+### CI — automated (Linux + Windows)
+Both Linux and Windows binaries are built automatically by the `release.yml` workflow when the tag is pushed.
 See `.github/workflows/release.yml` for details.
 
-### Windows (manual build)
+### Local development builds
 ```bash
-cargo build --release --target x86_64-pc-windows-msvc
-strip target/x86_64-pc-windows-msvc/release/stack-intercept.exe
+# Linux / macOS
+cargo build --release
+
+# Windows (requires MSVC Build Tools)
+build.cmd build --release
 ```
 
 ## Package

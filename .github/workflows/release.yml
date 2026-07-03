@@ -7,31 +7,56 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+            binary: stack-intercept
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+            binary: stack-intercept.exe
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Configure MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
-      - run: strip target/release/stack-intercept
+      - name: Strip binary (Linux only)
+        if: runner.os == 'Linux'
+        run: strip target/release/${{ matrix.binary }}
       - name: Create package directory
         run: |
           mkdir -p dist/stack-intercept
-          cp target/release/stack-intercept dist/stack-intercept/
+          cp target/release/${{ matrix.binary }} dist/stack-intercept/
           cp .env.example README.md download_model.sh dist/stack-intercept/
           cp -r docs dist/stack-intercept/
-      - name: Create tarball and checksum
+      - name: Package Linux tarball and checksum
+        if: runner.os == 'Linux'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          tar czf "stack-intercept-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" -C dist stack-intercept
-          sha256sum "stack-intercept-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz" > checksums.txt
+          tar czf "stack-intercept-v${VERSION}-${{ matrix.target }}.tar.gz" -C dist stack-intercept
+          sha256sum "stack-intercept-v${VERSION}-${{ matrix.target }}.tar.gz" > checksums.txt
+      - name: Package Windows zip and checksum
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "$env:GITHUB_REF_NAME" -replace '^v'
+          Compress-Archive -Path dist\stack-intercept -DestinationPath "stack-intercept-v${version}-${{ matrix.target }}.zip"
+          $hash = (Get-FileHash "stack-intercept-v${version}-${{ matrix.target }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  stack-intercept-v${version}-${{ matrix.target }}.zip" | Out-File -FilePath checksums.txt
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            stack-intercept-*.tar.gz
+            stack-intercept-*.${{ matrix.ext }}
             checksums.txt
-          generate_release_notes: true
+          generate_release_notes: ${{ matrix.os == 'ubuntu-latest' }}
           fail_on_unmatched_files: true
