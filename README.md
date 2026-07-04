@@ -61,12 +61,14 @@ python test_routing.py          # 60 checks, no API key needed
 Pre-built binaries for Linux and Windows on the [Releases page](https://github.com/sidsri14/stack-intercept/releases).
 
 ```bash
-# Linux
-curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.2.1/stack-intercept-v0.2.1-x86_64-unknown-linux-gnu.tar.gz
-tar xzf stack-intercept-v0.2.1-x86_64-unknown-linux-gnu.tar.gz
+# Linux x86_64
+curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.2.2/stack-intercept-v0.2.2-x86_64-unknown-linux-gnu.tar.gz
+tar xzf stack-intercept-v0.2.2-x86_64-unknown-linux-gnu.tar.gz
 cd stack-intercept
 
-# Windows — download the .zip from the Releases page and extract
+# Windows x86_64
+curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.2.2/stack-intercept-v0.2.2-x86_64-pc-windows-msvc.zip
+# Or download the .zip from the Releases page and extract
 ```
 
 ## How it works

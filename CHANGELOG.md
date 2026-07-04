@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.2] - 2026-07-04
+
+### Added
+- `GET /admin/config` endpoint — runtime config introspection with secrets masked
+  - Returns all config fields (cache_mode, URLs, limits, etc.)
+  - Secrets (admin_key, fallback_api_key) masked in output
+  - Doubles as a health check endpoint
+- Windows x86_64 binary via CI release workflow
+  - `stack-intercept.exe` packaged in `.zip` with docs and config template
+  - CI pipeline builds, packages, and generates SHA256 checksums for both Linux and Windows
+
+### Changed
+- CI pipeline now builds and tests on both Linux and Windows
+- Package step generates SHA256 checksums on both platforms
+- `.gitignore` excludes `.gstack/` directory
+
 ## [0.2.1] - 2026-06-30
 
 ### Added

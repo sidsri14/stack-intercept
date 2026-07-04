@@ -2,13 +2,15 @@
 
 ## Pre-release
 
-- [ ] `cargo build --release` compiles with zero warnings
-- [ ] `cargo clippy -- -D warnings` passes
-- [ ] `cargo fmt --check` passes
+- [x] `cargo build --release` compiles with zero warnings
+- [x] `cargo clippy -- -D warnings` passes
+- [x] `cargo fmt --check` passes
+- [x] All 32 Rust unit tests pass
 - [ ] All integration tests pass without API keys or model weights:
   ```bash
-  python test_mock_upstream.py    # 24 tests
-  python test_routing.py          # 60 tests
+  python test_mock_upstream.py    # ~59 checks
+  python test_routing.py          # ~60 checks
+  python test_persistence_eviction_sse.py  # ~24 checks
   ```
 - [ ] Demo script runs clean:
   ```bash
@@ -19,26 +21,14 @@
   python benchmark.py
   ```
 
-## Version bump
+## Version bump (done before tagging)
 
-- [ ] Update `version` in `Cargo.toml` (semver)
-- [ ] Update `CHANGELOG.md` with release notes
-  ```markdown
-  ## [0.1.1] - 2026-06-29
-
-  ### Added
-  - Linux x86_64 binary via CI
-  - SHA256 checksums for all release artifacts
-  - CI status badge and release badge in README
-  - Automated GitHub Release workflow (tag-triggered)
-
-  ### Changed
-  - `.gitignore` now excludes `dist/` directory
-  ```
+- [x] Update `version` in `Cargo.toml` (semver) — 0.2.1 → 0.2.2
+- [x] Update `CHANGELOG.md` with release notes
 
 ## Build
 
-### CI — automated (Linux + Windows)
+### CI — automated (Linux x86_64 + Windows x86_64)
 Both Linux and Windows binaries are built automatically by the `release.yml` workflow when the tag is pushed.
 See `.github/workflows/release.yml` for details.
 
@@ -53,15 +43,15 @@ build.cmd build --release
 
 ## Package
 
-- [ ] Binary + `.env.example` + `download_model.sh` + `docs/` → `.tar.gz` / `.zip`
+- [x] Binary + `.env.example` + `download_model.sh` + `docs/` → `.tar.gz` / `.zip` (CI handles this)
 - [ ] Verify binary starts: `./stack-intercept` prints "online at http://127.0.0.1:8080"
 - [ ] Verify `.env.example` has accurate defaults
 - [ ] Verify `README.md` quickstart works from scratch
 
 ## GitHub Release
 
-- [ ] Tag: `git tag v0.1.1 && git push --tags`
+- [ ] Tag: `git tag v0.2.2 && git push --tags`
 - [ ] Create release at https://github.com/sidsri14/stack-intercept/releases
-- [ ] Upload Linux binary: `stack-intercept-v0.1.1-x86_64-unknown-linux-gnu.tar.gz`
-- [ ] Upload Windows binary: `stack-intercept-v0.1.1-x86_64-pc-windows-msvc.zip`
+- [ ] Upload Linux binary: `stack-intercept-v0.2.2-x86_64-unknown-linux-gnu.tar.gz`
+- [ ] Upload Windows binary: `stack-intercept-v0.2.2-x86_64-pc-windows-msvc.zip`
 - [ ] Write release notes (copy from CHANGELOG)
