@@ -81,6 +81,7 @@ jobs:
         if: runner.os == 'Linux'
         run: strip target/release/${{ matrix.binary }}
       - name: Create package directory
+        shell: bash
         run: |
           mkdir -p dist/stack-intercept
           cp target/release/${{ matrix.binary }} dist/stack-intercept/
