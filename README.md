@@ -240,6 +240,10 @@ curl -X DELETE http://127.0.0.1:8080/admin/cache
 
 For self-hosted production setup, see [docs/deployment.md](docs/deployment.md).
 
+For implementation details and safety boundaries, see [docs/design.md](docs/design.md).
+
+For local benchmark output and reproduction steps, see [docs/benchmarks.md](docs/benchmarks.md).
+
 ## Build & Run
 
 ```bash

@@ -73,6 +73,7 @@ def start_proxy(extra_env=None):
     env = os.environ.copy()
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
     env["STACK_INTERCEPT_UPSTREAM_URL"] = f"http://127.0.0.1:{MOCK_PORT}"
+    env["STACK_INTERCEPT_DISABLE_PERSISTENCE"] = "true"
     if extra_env:
         env.update(extra_env)
     proc = subprocess.Popen(
@@ -238,7 +239,12 @@ def main():
     # ---- 4. Semantic mode startup overhead ----
     print("Benchmarking: semantic mode startup...")
     # Check if model weights exist
-    model_exists = os.path.isdir("model") and os.path.isfile("model/config.json")
+    model_exists = (
+        os.path.isdir("model")
+        and os.path.isfile("model/config.json")
+        and os.path.isfile("model/tokenizer.json")
+        and os.path.isfile("model/model.safetensors")
+    )
     if model_exists:
         def semantic_startup():
             nonlocal proxy
@@ -263,9 +269,11 @@ def main():
                 send_request(sem_payload)
                 req_elapsed = time.perf_counter() - req_start
                 latencies.append((elapsed + req_elapsed) * 1000)
+                print(f"    Iteration {i+1}: startup={elapsed*1000:.0f}ms, first-req={req_elapsed*1000:.1f}ms")
+            else:
+                print(f"    Iteration {i+1}: startup failed after {elapsed*1000:.0f}ms")
             proxy.terminate()
             proxy.wait(timeout=5)
-            print(f"    Iteration {i+1}: startup={elapsed*1000:.0f}ms, first-req={req_elapsed*1000:.1f}ms")
 
         name = "Semantic startup + first request"
         m = median(latencies) if latencies else -1

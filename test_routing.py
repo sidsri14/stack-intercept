@@ -123,6 +123,7 @@ def proxy_binary():
 def start_proxy(allow_rewrite="true", set_fallback_key=True):
     env = os.environ.copy()
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
+    env["STACK_INTERCEPT_DISABLE_PERSISTENCE"] = "true"
     env["STACK_INTERCEPT_ALLOW_MODEL_REWRITE"] = allow_rewrite
     env["STACK_INTERCEPT_UPSTREAM_URL"] = MOCK_UPSTREAM_URL
     env["STACK_INTERCEPT_FALLBACK_URL"] = MOCK_FALLBACK_URL

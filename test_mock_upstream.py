@@ -114,6 +114,7 @@ def start_proxy(extra_env=None):
     env = os.environ.copy()
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
     env["STACK_INTERCEPT_UPSTREAM_URL"] = f"http://127.0.0.1:{MOCK_PORT}"
+    env["STACK_INTERCEPT_DISABLE_PERSISTENCE"] = "true"
     if extra_env:
         env.update(extra_env)
     proc = subprocess.Popen(

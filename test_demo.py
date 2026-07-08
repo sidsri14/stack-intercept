@@ -80,6 +80,7 @@ def proxy_binary():
 def start_proxy(upstream_url, fallback_url):
     env = os.environ.copy()
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
+    env["STACK_INTERCEPT_DISABLE_PERSISTENCE"] = "true"
     env["STACK_INTERCEPT_ALLOW_MODEL_REWRITE"] = "true"
     env["STACK_INTERCEPT_UPSTREAM_URL"] = upstream_url
     env["STACK_INTERCEPT_FALLBACK_URL"] = fallback_url
