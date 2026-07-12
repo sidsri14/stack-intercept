@@ -139,41 +139,38 @@
             font-size: 0.875rem;
             margin-bottom: 1.5rem;
         }
-        .cta form {
+        .cta-buttons {
             display: flex;
-            gap: 0.5rem;
-            max-width: 400px;
-            margin: 0 auto;
+            gap: 0.75rem;
+            justify-content: center;
+            flex-wrap: wrap;
         }
-        .cta input {
-            flex: 1;
-            background: #0a0a0a;
-            border: 1px solid #222;
-            border-radius: 4px;
-            padding: 0.75rem 1rem;
-            color: #e0e0e0;
-            font-family: inherit;
-            font-size: 0.875rem;
-        }
-        .cta input:focus {
-            outline: none;
-            border-color: #444;
-        }
-        .cta button {
+        .btn-primary {
             background: #e0e0e0;
             color: #0a0a0a;
-            border: none;
             border-radius: 4px;
             padding: 0.75rem 1.5rem;
             font-family: inherit;
             font-size: 0.875rem;
             font-weight: 500;
-            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
             white-space: nowrap;
         }
-        .cta button:hover {
-            background: #fff;
+        .btn-primary:hover { background: #fff; }
+        .btn-secondary {
+            background: transparent;
+            color: #666;
+            border: 1px solid #222;
+            border-radius: 4px;
+            padding: 0.75rem 1.5rem;
+            font-family: inherit;
+            font-size: 0.875rem;
+            text-decoration: none;
+            display: inline-block;
+            white-space: nowrap;
         }
+        .btn-secondary:hover { color: #aaa; border-color: #444; }
         footer {
             padding: 2rem 0;
             font-size: 0.75rem;
@@ -193,8 +190,8 @@
             <div class="logo">stackintercept <span>//</span> dev</div>
             <h1>Zero-latency proxy for your LLM stack.</h1>
             <div class="subtitle">
-                Drop-in Rust proxy. Sub-millisecond semantic cache.<br>
-                30–40% off your API bill. One line of config to test.
+                Drop-in Rust proxy. Exact + semantic caching in pure Rust.<br>
+                Cut redundant API calls to zero. One line of config to test.
             </div>
         </header>
 
@@ -218,15 +215,15 @@
         <div class="stats">
             <div class="stat">
                 <div class="stat-number">&lt;2ms</div>
-                <div class="stat-label">added overhead</div>
+                <div class="stat-label">exact cache overhead</div>
             </div>
             <div class="stat">
-                <div class="stat-number">384-dim</div>
-                <div class="stat-label">local embeddings (candle)</div>
+                <div class="stat-number">133 MB</div>
+                <div class="stat-label">local BGE model, no API</div>
             </div>
             <div class="stat">
-                <div class="stat-number">~35%</div>
-                <div class="stat-label">avg API cost reduction</div>
+                <div class="stat-number">$0</div>
+                <div class="stat-label">cost on cache hits</div>
             </div>
         </div>
 
@@ -241,7 +238,7 @@
             </div>
             <div class="feature">
                 <div class="feature-marker">$</div>
-                <div class="feature-text"><strong>Semantic cache.</strong> Local Candle embeddings + HNSW index. Sub-millisecond similarity search.</div>
+                <div class="feature-text"><strong>Semantic cache.</strong> BGE-small-en-v1.5 runs locally on CPU via Candle. Cosine similarity match across conversation buckets. No external embedding API.</div>
             </div>
             <div class="feature">
                 <div class="feature-marker">$</div>
@@ -254,12 +251,12 @@
         </div>
 
         <div class="cta">
-            <h2>Early access</h2>
-            <p>Drop your email. We'll send you the binary and a 7-day trial key.</p>
-            <form action="#" method="post">
-                <input type="email" placeholder="you@company.com" required>
-                <button type="submit">Get early access</button>
-            </form>
+            <h2>Download v0.2.2</h2>
+            <p>Pre-built binaries for Linux x86_64 and Windows. Drop it in, change your <code>base_url</code>, done.</p>
+            <div class="cta-buttons">
+                <a class="btn-primary" href="https://github.com/sidsri14/stack-intercept/releases" target="_blank">↓ GitHub Releases</a>
+                <a class="btn-secondary" href="mailto:sidsri1502@gmail.com?subject=StackIntercept%20Trial" target="_blank">Email for support</a>
+            </div>
         </div>
 
         <footer>
