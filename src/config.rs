@@ -22,6 +22,9 @@ struct FileConfig {
     semantic_ttl_secs: Option<u64>,
     cache_path: Option<String>,
     disable_persistence: Option<bool>,
+    reactive_failover: Option<bool>,
+    failover_model: Option<String>,
+    failover_status_codes: Option<Vec<u16>>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +44,9 @@ pub struct ProxyConfig {
     pub semantic_ttl_secs: u64,
     pub cache_path: Option<String>,
     pub disable_persistence: bool,
+    pub reactive_failover: bool,
+    pub failover_model: Option<String>,
+    pub failover_status_codes: Vec<u16>,
 }
 
 impl ProxyConfig {
@@ -61,6 +67,9 @@ impl ProxyConfig {
             semantic_ttl_secs: 3600,
             cache_path: None,
             disable_persistence: false,
+            reactive_failover: false,
+            failover_model: None,
+            failover_status_codes: vec![500, 502, 503, 504],
         }
     }
 
@@ -161,6 +170,15 @@ impl ProxyConfig {
         if let Some(v) = file_config.disable_persistence {
             self.disable_persistence = v;
         }
+        if let Some(v) = file_config.reactive_failover {
+            self.reactive_failover = v;
+        }
+        if let Some(v) = file_config.failover_model {
+            self.failover_model = Some(v);
+        }
+        if let Some(v) = file_config.failover_status_codes {
+            self.failover_status_codes = v;
+        }
     }
 
     pub fn apply_env_overrides(&mut self) -> &mut Self {
@@ -232,6 +250,23 @@ impl ProxyConfig {
         }
         if let Ok(v) = std::env::var("STACK_INTERCEPT_DISABLE_PERSISTENCE") {
             self.disable_persistence = v == "true" || v == "1";
+        }
+        if let Ok(v) = std::env::var("STACK_INTERCEPT_REACTIVE_FAILOVER") {
+            self.reactive_failover = v == "true" || v == "1";
+        }
+        if let Ok(v) = std::env::var("STACK_INTERCEPT_FAILOVER_MODEL") {
+            self.failover_model = Some(v);
+        }
+        if let Ok(v) = std::env::var("STACK_INTERCEPT_FAILOVER_STATUS_CODES") {
+            let codes: Vec<u16> = v.split(',')
+                .map(|s| s.trim())
+                .filter_map(|s| s.parse::<u16>().ok())
+                .collect();
+            if !codes.is_empty() {
+                self.failover_status_codes = codes;
+            } else {
+                eprintln!("WARNING: STACK_INTERCEPT_FAILOVER_STATUS_CODES='{}' had no valid status codes, ignoring", v);
+            }
         }
         self
     }

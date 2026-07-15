@@ -1,6 +1,18 @@
 # Changelog
 
+## [0.3.0] - 2026-07-15
+
+### Added
+- **Resilience Auto-Failover Engine (Reactive Failover)**:
+  - Automatically retries and failovers request to a fallback provider when primary upstream fails.
+  - Failover is triggered on connection/transport errors or configurable status codes (default `500, 502, 503, 504`).
+  - Configurable via TOML or env vars (`STACK_INTERCEPT_REACTIVE_FAILOVER`, `STACK_INTERCEPT_FAILOVER_MODEL`, `STACK_INTERCEPT_FAILOVER_STATUS_CODES`).
+  - Supports model name rewriting on failover via `STACK_INTERCEPT_FAILOVER_MODEL`.
+  - Increments a new `reactive_failovers` metric visible on `/admin/metrics`.
+- Integration test suite (`test_failover.py`) checking connection refuse, 5xx errors, model rewriting, and disabled modes.
+
 ## [0.2.2] - 2026-07-04
+
 
 ### Added
 - `GET /admin/config` endpoint — runtime config introspection with secrets masked

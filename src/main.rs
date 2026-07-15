@@ -100,6 +100,7 @@ pub struct Metrics {
     pub routed_passthrough: AtomicU64,
     pub cache_inserts_exact: AtomicU64,
     pub cache_inserts_semantic: AtomicU64,
+    pub reactive_failovers: AtomicU64,
     pub started_at: std::time::Instant,
 }
 
@@ -114,6 +115,7 @@ impl Metrics {
             routed_passthrough: AtomicU64::new(0),
             cache_inserts_exact: AtomicU64::new(0),
             cache_inserts_semantic: AtomicU64::new(0),
+            reactive_failovers: AtomicU64::new(0),
             started_at: std::time::Instant::now(),
         }
     }
@@ -464,6 +466,7 @@ struct MetricsResponse {
     routed_passthrough: u64,
     cache_inserts_exact: u64,
     cache_inserts_semantic: u64,
+    reactive_failovers: u64,
 }
 
 #[derive(Serialize)]
@@ -507,6 +510,7 @@ async fn admin_metrics(
         routed_passthrough: m.routed_passthrough.load(Ordering::Relaxed),
         cache_inserts_exact: m.cache_inserts_exact.load(Ordering::Relaxed),
         cache_inserts_semantic: m.cache_inserts_semantic.load(Ordering::Relaxed),
+        reactive_failovers: m.reactive_failovers.load(Ordering::Relaxed),
     };
     (StatusCode::OK, Json(resp)).into_response()
 }
@@ -732,12 +736,12 @@ async fn handle_intercept(
         };
     }
 
-    let route_label = if route.needs_fallback_key {
+    let mut route_label = if route.needs_fallback_key {
         "fallback"
     } else {
         "passthrough"
     };
-    let routed_model = &route.final_model;
+    let mut routed_model = route.final_model.clone();
 
     if route.needs_fallback_key {
         state
@@ -786,7 +790,7 @@ async fn handle_intercept(
                         Response::builder(),
                         route_label,
                         &requested_model,
-                        routed_model,
+                        &routed_model,
                     )
                     .header("content-type", "text/event-stream")
                     .header("x-stack-intercept", "hit")
@@ -798,7 +802,7 @@ async fn handle_intercept(
                         Response::builder(),
                         route_label,
                         &requested_model,
-                        routed_model,
+                        &routed_model,
                     )
                     .header("content-type", "application/json")
                     .header("x-stack-intercept", "hit")
@@ -861,7 +865,7 @@ async fn handle_intercept(
                                 Response::builder(),
                                 route_label,
                                 &requested_model,
-                                routed_model,
+                                &routed_model,
                             )
                             .header("content-type", "text/event-stream")
                             .header("x-stack-intercept", "hit")
@@ -873,7 +877,7 @@ async fn handle_intercept(
                                 Response::builder(),
                                 route_label,
                                 &requested_model,
-                                routed_model,
+                                &routed_model,
                             )
                             .header("content-type", "application/json")
                             .header("x-stack-intercept", "hit")
@@ -890,14 +894,14 @@ async fn handle_intercept(
     // 4. Cache miss — forward using the route decision
     // Clone and inject the routed model into the outbound payload
     let mut modified_payload = payload.clone();
-    if modified_payload["model"].as_str() != Some(&route.final_model) {
+    if modified_payload["model"].as_str() != Some(&routed_model) {
         if let Some(model_mut) = modified_payload.get_mut("model") {
-            *model_mut = serde_json::Value::String(route.final_model.clone());
+            *model_mut = serde_json::Value::String(routed_model.clone());
         }
     }
 
     // Pick the right auth key for the destination
-    let final_auth = if route.needs_fallback_key {
+    let mut final_auth = if route.needs_fallback_key {
         as_bearer(
             state
                 .config
@@ -911,13 +915,70 @@ async fn handle_intercept(
 
     state.metrics.misses.fetch_add(1, Ordering::Relaxed);
 
-    let upstream_res = state
+    let mut final_url = route.final_url.clone();
+    let mut upstream_res = state
         .client
-        .post(&route.final_url)
-        .header("authorization", final_auth)
+        .post(&final_url)
+        .header("authorization", &final_auth)
         .json(&modified_payload)
         .send()
         .await;
+
+    // Check if we should failover:
+    // Failover is triggered if:
+    // 1. STACK_INTERCEPT_REACTIVE_FAILOVER is enabled
+    // 2. We are not already using the fallback (needs_fallback_key is false)
+    // 3. A fallback API key is configured
+    // 4. The upstream request failed (Err) OR returned a status code in failover_status_codes
+    let should_failover = state.config.reactive_failover
+        && !route.needs_fallback_key
+        && state.config.fallback_api_key.is_some();
+
+    if should_failover {
+        let is_failed = match &upstream_res {
+            Err(_) => true,
+            Ok(res) => state.config.failover_status_codes.contains(&res.status().as_u16()),
+        };
+
+        if is_failed {
+            println!(
+                "Reactive failover triggered! Upstream request failed (result: {:?}). Routing to fallback...",
+                upstream_res.as_ref().map(|r| r.status())
+            );
+            state.metrics.reactive_failovers.fetch_add(1, Ordering::Relaxed);
+
+            // Rewrite final_url to use fallback
+            final_url = format!("{}/v1/chat/completions", state.config.fallback_base_url);
+            
+            // Rewrite final_auth to use fallback API key
+            final_auth = as_bearer(
+                state
+                    .config
+                    .fallback_api_key
+                    .as_ref()
+                    .unwrap(),
+            );
+
+            // Rewrite payload model name if failover_model is configured
+            if let Some(ref fm) = state.config.failover_model {
+                routed_model = fm.clone();
+                if let Some(model_mut) = modified_payload.get_mut("model") {
+                    *model_mut = serde_json::Value::String(fm.clone());
+                }
+            }
+
+            route_label = "fallback";
+
+            // Retry the request to the fallback provider
+            upstream_res = state
+                .client
+                .post(&final_url)
+                .header("authorization", &final_auth)
+                .json(&modified_payload)
+                .send()
+                .await;
+        }
+    }
 
     match upstream_res {
         Ok(res) => {
@@ -1017,7 +1078,7 @@ async fn handle_intercept(
                     Response::builder(),
                     route_label,
                     &requested_model,
-                    routed_model,
+                    &routed_model,
                 )
                 .status(status)
                 .header("content-type", "text/event-stream")
@@ -1076,7 +1137,7 @@ async fn handle_intercept(
                 Response::builder(),
                 route_label,
                 &requested_model,
-                routed_model,
+                &routed_model,
             )
             .status(status)
             .header("x-stack-intercept", "miss")
@@ -1101,7 +1162,7 @@ async fn handle_intercept(
                 Response::builder(),
                 route_label,
                 &requested_model,
-                routed_model,
+                &routed_model,
             )
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .header("x-stack-intercept", "error");

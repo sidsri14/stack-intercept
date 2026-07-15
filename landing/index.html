@@ -124,7 +124,7 @@
             background: #111;
             border: 1px solid #222;
             border-radius: 8px;
-            padding: 2rem;
+            padding: 2.5rem;
             margin: 3rem 0;
             text-align: center;
         }
@@ -144,6 +144,7 @@
             gap: 0.75rem;
             justify-content: center;
             flex-wrap: wrap;
+            margin-bottom: 1.5rem;
         }
         .btn-primary {
             background: #e0e0e0;
@@ -171,6 +172,43 @@
             white-space: nowrap;
         }
         .btn-secondary:hover { color: #aaa; border-color: #444; }
+        .email-form {
+            display: flex;
+            gap: 0.5rem;
+            max-width: 420px;
+            margin: 1.5rem auto 0;
+        }
+        .email-form input[type="email"] {
+            flex: 1;
+            background: #050505;
+            border: 1px solid #222;
+            border-radius: 4px;
+            padding: 0.75rem 1rem;
+            color: #fff;
+            font-family: inherit;
+            font-size: 0.875rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .email-form input[type="email"]:focus {
+            border-color: #444;
+        }
+        .email-form button {
+            background: #e0e0e0;
+            color: #0a0a0a;
+            border: none;
+            border-radius: 4px;
+            padding: 0.75rem 1.5rem;
+            font-family: inherit;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+        .email-form button:hover {
+            background: #fff;
+        }
         footer {
             padding: 2rem 0;
             font-size: 0.75rem;
@@ -181,6 +219,9 @@
             h1 { font-size: 1.75rem; }
             .stats { grid-template-columns: 1fr; }
             .cta form { flex-direction: column; }
+            .email-form {
+                flex-direction: column;
+            }
         }
     </style>
 </head>
@@ -255,8 +296,11 @@
             <p>Pre-built binaries for Linux x86_64 and Windows. Drop it in, change your <code>base_url</code>, done.</p>
             <div class="cta-buttons">
                 <a class="btn-primary" href="https://github.com/sidsri14/stack-intercept/releases" target="_blank">↓ GitHub Releases</a>
-                <a class="btn-secondary" href="mailto:sidsri1502@gmail.com?subject=StackIntercept%20Trial" target="_blank">Email for support</a>
             </div>
+            <form action="https://formspree.io/f/mbdnlden" method="POST" class="email-form">
+                <input type="email" name="email" placeholder="Enter email to request trial key..." required>
+                <button type="submit">Get Trial Key</button>
+            </form>
         </div>
 
         <footer>
