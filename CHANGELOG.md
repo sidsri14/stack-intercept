@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.0] - 2026-07-15
+## [0.3.0] - 2026-07-16
 
 ### Added
 - **Resilience Auto-Failover Engine (Reactive Failover)**:
@@ -10,6 +10,11 @@
   - Supports model name rewriting on failover via `STACK_INTERCEPT_FAILOVER_MODEL`.
   - Increments a new `reactive_failovers` metric visible on `/admin/metrics`.
 - Integration test suite (`test_failover.py`) checking connection refuse, 5xx errors, model rewriting, and disabled modes.
+- **Per-tenant metrics breakdown**: cache hit/miss/routing/error counters isolated per tenant ID.
+- **Prometheus endpoint**: `GET /admin/metrics/prometheus` exposes all counters in Prometheus text format.
+- **Semantic cache eviction by item ID**: `DELETE /admin/cache/semantic/:key?item_id=N` removes a single entry from a context bucket.
+- **Per-request semantic cache opt-out**: `x-stack-intercept-no-semantic-cache: true` header bypasses semantic cache for individual requests.
+- **Docker support**: multi-stage Dockerfile with Rust compilation + BGE model download + Compose configuration.
 
 ## [0.2.2] - 2026-07-04
 

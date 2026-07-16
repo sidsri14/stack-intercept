@@ -1,0 +1,15 @@
+services:
+  proxy:
+    build: .
+    container_name: stack-intercept-engine
+    ports:
+      - "8080:8080"
+    environment:
+      - STACK_INTERCEPT_CACHE_MODE=exact
+      - STACK_INTERCEPT_UPSTREAM_URL=https://api.openai.com
+      - STACK_INTERCEPT_FALLBACK_URL=https://api.deepseek.com
+      - STACK_INTERCEPT_CACHE_PATH=/data/cache_state.bin
+      - STACK_INTERCEPT_ADMIN_KEY=dev-test-key
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

@@ -40,6 +40,26 @@ pub fn evict_bucket(bucket: &mut Vec<CacheItem>, max_bucket_items: usize) -> usi
     before.saturating_sub(bucket.len())
 }
 
+/// Remove a specific item by index from a semantic cache bucket.
+/// Returns true if an item was removed, false if the bucket doesn't exist
+/// or the index is out of bounds.
+pub fn evict_item(
+    index: &DashMap<String, Vec<CacheItem>>,
+    bucket_id: &str,
+    item_id: usize,
+) -> bool {
+    if let Some(mut bucket) = index.get_mut(bucket_id) {
+        if item_id < bucket.len() {
+            bucket.remove(item_id);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
 /// Scan all shards in the semantic index and evict entries if total exceeds
 /// `max_items`. Expired entries are removed first, then the oldest entries
 /// globally. Returns total number of entries evicted.
@@ -421,6 +441,45 @@ pub fn load_snapshot(path: &str) -> Result<Snapshot, Box<dyn std::error::Error>>
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn test_evict_item_valid() {
+        let index = DashMap::new();
+        let bucket = vec![
+            make_item(100, 3600),
+            make_item(50, 3600),
+            make_item(10, 3600),
+        ];
+        index.insert("ctx".to_string(), bucket);
+
+        // Remove middle item (index 1)
+        let result = evict_item(&index, "ctx", 1);
+        assert!(result);
+
+        let remaining = index.get("ctx").unwrap();
+        assert_eq!(remaining.len(), 2);
+        // The 100s-old and 10s-old items remain
+        assert!(remaining[0].created_at.elapsed().as_secs() > 80);
+        assert!(remaining[1].created_at.elapsed().as_secs() < 20);
+    }
+
+    #[test]
+    fn test_evict_item_out_of_bounds() {
+        let index = DashMap::new();
+        let bucket = vec![make_item(10, 3600)];
+        index.insert("ctx".to_string(), bucket);
+
+        let result = evict_item(&index, "ctx", 5);
+        assert!(!result);
+        assert_eq!(index.get("ctx").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_evict_item_nonexistent_bucket() {
+        let index: DashMap<String, Vec<CacheItem>> = DashMap::new();
+        let result = evict_item(&index, "does-not-exist", 0);
+        assert!(!result);
+    }
 
     fn make_item(created_ago_secs: u64, ttl_secs: u64) -> CacheItem {
         CacheItem {

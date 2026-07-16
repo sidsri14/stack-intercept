@@ -1,0 +1,9 @@
+target/
+.git/
+*.md
+*.cmd
+*.py
+.github/
+docs/
+landing/
+data/

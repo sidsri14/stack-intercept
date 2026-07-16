@@ -191,7 +191,7 @@ def main():
         
         # Verify metrics
         metrics = get_metrics()
-        assert_eq(metrics.get("reactive_failovers"), 1, "reactive_failovers counter should increment to 1")
+        assert_eq(metrics.get("global", {}).get("reactive_failovers"), 1, "reactive_failovers counter should increment to 1")
     except Exception as e:
         print(f"  [FAIL] Request failed: {e}")
         global FAIL
@@ -229,7 +229,7 @@ def main():
         
         # Verify metrics
         metrics = get_metrics()
-        assert_eq(metrics.get("reactive_failovers"), 1, "reactive_failovers counter should increment to 1")
+        assert_eq(metrics.get("global", {}).get("reactive_failovers"), 1, "reactive_failovers counter should increment to 1")
     except Exception as e:
         print(f"  [FAIL] Request failed: {e}")
         FAIL += 1
@@ -300,7 +300,7 @@ def main():
         
         # Verify metrics
         metrics = get_metrics()
-        assert_eq(metrics.get("reactive_failovers"), 0, "reactive_failovers counter should remain 0")
+        assert_eq(metrics.get("global", {}).get("reactive_failovers"), 0, "reactive_failovers counter should remain 0")
     except Exception as e:
         print(f"  [FAIL] Unexpected error: {e}")
         FAIL += 1

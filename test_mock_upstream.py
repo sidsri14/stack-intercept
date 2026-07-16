@@ -359,9 +359,11 @@ def run_admin_tests():
     status, body, _ = send_admin_get("/metrics")
     check("admin/metrics status 200", status == 200, f"(status: {status})")
     check("admin/metrics has uptime_secs", "uptime_secs" in body)
-    check("admin/metrics exact_hits is 0", body.get("exact_hits") == 0)
-    check("admin/metrics semantic_hits is 0", body.get("semantic_hits") == 0)
-    check("admin/metrics misses is 0", body.get("misses") == 0)
+    check("admin/metrics global exists", "global" in body)
+    check("admin/metrics tenants exists", "tenants" in body)
+    check("admin/metrics exact_hits is 0", body["global"]["exact_hits"] == 0)
+    check("admin/metrics semantic_hits is 0", body["global"]["semantic_hits"] == 0)
+    check("admin/metrics misses is 0", body["global"]["misses"] == 0)
     print()
 
     print("=" * 60)
@@ -390,8 +392,8 @@ def run_admin_tests():
     time.sleep(1.5)  # Ensure uptime_secs ticks past 0
 
     status, body, _ = send_admin_get("/metrics")
-    check("exact_hits >= 1 after hit", body.get("exact_hits") >= 1)
-    check("misses >= 1 after miss", body.get("misses") >= 1)
+    check("exact_hits >= 1 after hit", body["global"]["exact_hits"] >= 1)
+    check("misses >= 1 after miss", body["global"]["misses"] >= 1)
     check("uptime_secs > 0", body.get("uptime_secs", 0) > 0)
     print()
 

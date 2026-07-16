@@ -10,7 +10,7 @@ use crate::embeddings::LocalPredictor;
 use crate::router::evaluate_routing;
 use axum::{
     body::{Body, Bytes},
-    extract::{ConnectInfo, DefaultBodyLimit, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Query, State},
     http::response::Builder as ResponseBuilder,
     http::{HeaderMap, Response, StatusCode},
     response::IntoResponse,
@@ -91,6 +91,40 @@ fn build_context_key(
     format!("{:x}", hasher.finalize())
 }
 
+pub struct TenantMetrics {
+    pub exact_hits: AtomicU64,
+    pub semantic_hits: AtomicU64,
+    pub misses: AtomicU64,
+    pub upstream_errors: AtomicU64,
+    pub routed_fallback: AtomicU64,
+    pub routed_passthrough: AtomicU64,
+    pub cache_inserts_exact: AtomicU64,
+    pub cache_inserts_semantic: AtomicU64,
+    pub reactive_failovers: AtomicU64,
+}
+
+impl TenantMetrics {
+    fn new() -> Self {
+        Self {
+            exact_hits: AtomicU64::new(0),
+            semantic_hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            upstream_errors: AtomicU64::new(0),
+            routed_fallback: AtomicU64::new(0),
+            routed_passthrough: AtomicU64::new(0),
+            cache_inserts_exact: AtomicU64::new(0),
+            cache_inserts_semantic: AtomicU64::new(0),
+            reactive_failovers: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Default for TenantMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Metrics {
     pub exact_hits: AtomicU64,
     pub semantic_hits: AtomicU64,
@@ -102,6 +136,7 @@ pub struct Metrics {
     pub cache_inserts_semantic: AtomicU64,
     pub reactive_failovers: AtomicU64,
     pub started_at: std::time::Instant,
+    pub tenants: DashMap<String, TenantMetrics>,
 }
 
 impl Metrics {
@@ -117,7 +152,12 @@ impl Metrics {
             cache_inserts_semantic: AtomicU64::new(0),
             reactive_failovers: AtomicU64::new(0),
             started_at: std::time::Instant::now(),
+            tenants: DashMap::new(),
         }
+    }
+
+    pub fn tenant_key(tenant_id: &Option<String>) -> String {
+        tenant_id.clone().unwrap_or_else(|| "_default_".to_string())
     }
 }
 
@@ -259,7 +299,11 @@ async fn main() {
             "/cache/semantic/:context_key",
             axum::routing::delete(admin_cache_semantic_delete),
         )
-        .route("/config", axum::routing::get(admin_config));
+        .route("/config", axum::routing::get(admin_config))
+        .route(
+            "/metrics/prometheus",
+            axum::routing::get(admin_metrics_prometheus),
+        );
 
     let app = Router::new()
         .route("/v1/chat/completions", post(handle_intercept))
@@ -267,7 +311,7 @@ async fn main() {
         .layer(DefaultBodyLimit::max(shared_state.config.max_body_size))
         .with_state(shared_state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     println!("StackIntercept online at http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -456,8 +500,7 @@ fn check_admin_auth(
 }
 
 #[derive(Serialize)]
-struct MetricsResponse {
-    uptime_secs: u64,
+struct GlobalMetricsResponse {
     exact_hits: u64,
     semantic_hits: u64,
     misses: u64,
@@ -467,6 +510,26 @@ struct MetricsResponse {
     cache_inserts_exact: u64,
     cache_inserts_semantic: u64,
     reactive_failovers: u64,
+}
+
+#[derive(Serialize)]
+struct TenantMetricsSnapshot {
+    exact_hits: u64,
+    semantic_hits: u64,
+    misses: u64,
+    upstream_errors: u64,
+    routed_fallback: u64,
+    routed_passthrough: u64,
+    cache_inserts_exact: u64,
+    cache_inserts_semantic: u64,
+    reactive_failovers: u64,
+}
+
+#[derive(Serialize)]
+struct MetricsResponse {
+    uptime_secs: u64,
+    global: GlobalMetricsResponse,
+    tenants: std::collections::HashMap<String, TenantMetricsSnapshot>,
 }
 
 #[derive(Serialize)]
@@ -500,8 +563,7 @@ async fn admin_metrics(
         return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
     let m = &state.metrics;
-    let resp = MetricsResponse {
-        uptime_secs: m.started_at.elapsed().as_secs(),
+    let global = GlobalMetricsResponse {
         exact_hits: m.exact_hits.load(Ordering::Relaxed),
         semantic_hits: m.semantic_hits.load(Ordering::Relaxed),
         misses: m.misses.load(Ordering::Relaxed),
@@ -512,7 +574,147 @@ async fn admin_metrics(
         cache_inserts_semantic: m.cache_inserts_semantic.load(Ordering::Relaxed),
         reactive_failovers: m.reactive_failovers.load(Ordering::Relaxed),
     };
+    let mut tenants = std::collections::HashMap::new();
+    for entry in m.tenants.iter() {
+        let snapshot = TenantMetricsSnapshot {
+            exact_hits: entry.value().exact_hits.load(Ordering::Relaxed),
+            semantic_hits: entry.value().semantic_hits.load(Ordering::Relaxed),
+            misses: entry.value().misses.load(Ordering::Relaxed),
+            upstream_errors: entry.value().upstream_errors.load(Ordering::Relaxed),
+            routed_fallback: entry.value().routed_fallback.load(Ordering::Relaxed),
+            routed_passthrough: entry.value().routed_passthrough.load(Ordering::Relaxed),
+            cache_inserts_exact: entry.value().cache_inserts_exact.load(Ordering::Relaxed),
+            cache_inserts_semantic: entry.value().cache_inserts_semantic.load(Ordering::Relaxed),
+            reactive_failovers: entry.value().reactive_failovers.load(Ordering::Relaxed),
+        };
+        tenants.insert(entry.key().clone(), snapshot);
+    }
+    let resp = MetricsResponse {
+        uptime_secs: m.started_at.elapsed().as_secs(),
+        global,
+        tenants,
+    };
     (StatusCode::OK, Json(resp)).into_response()
+}
+
+async fn admin_metrics_prometheus(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if let Err(status) = check_admin_auth(&headers, addr, &state.config) {
+        return (status, "unauthorized").into_response();
+    }
+
+    let m = &state.metrics;
+    let mut body = String::new();
+
+    // Helper: emit a HELP/TYPE header + one line per tenant
+    fn emit_metric(
+        body: &mut String,
+        name: &str,
+        help: &str,
+        global_val: u64,
+        tenants: &DashMap<String, TenantMetrics>,
+        getter: fn(&TenantMetrics) -> u64,
+    ) {
+        body.push_str(&format!("# HELP {} {}\n", name, help));
+        body.push_str(&format!("# TYPE {} counter\n", name));
+        body.push_str(&format!("{}{{tenant=\"\"}} {}\n", name, global_val));
+        for entry in tenants.iter() {
+            let val = getter(entry.value());
+            body.push_str(&format!("{}{{tenant=\"{}\"}} {}\n", name, entry.key(), val));
+        }
+        body.push('\n');
+    }
+
+    emit_metric(
+        &mut body,
+        "stack_intercept_exact_hits",
+        "Total exact cache hits",
+        m.exact_hits.load(Ordering::Relaxed),
+        &m.tenants,
+        |t| t.exact_hits.load(Ordering::Relaxed),
+    );
+    emit_metric(
+        &mut body,
+        "stack_intercept_semantic_hits",
+        "Total semantic cache hits",
+        m.semantic_hits.load(Ordering::Relaxed),
+        &m.tenants,
+        |t| t.semantic_hits.load(Ordering::Relaxed),
+    );
+    emit_metric(
+        &mut body,
+        "stack_intercept_misses",
+        "Total cache misses",
+        m.misses.load(Ordering::Relaxed),
+        &m.tenants,
+        |t| t.misses.load(Ordering::Relaxed),
+    );
+    emit_metric(
+        &mut body,
+        "stack_intercept_upstream_errors",
+        "Total upstream connection errors",
+        m.upstream_errors.load(Ordering::Relaxed),
+        &m.tenants,
+        |t| t.upstream_errors.load(Ordering::Relaxed),
+    );
+    emit_metric(
+        &mut body,
+        "stack_intercept_routed_fallback",
+        "Total requests routed to fallback provider",
+        m.routed_fallback.load(Ordering::Relaxed),
+        &m.tenants,
+        |t| t.routed_fallback.load(Ordering::Relaxed),
+    );
+    emit_metric(
+        &mut body,
+        "stack_intercept_routed_passthrough",
+        "Total requests passed through to upstream",
+        m.routed_passthrough.load(Ordering::Relaxed),
+        &m.tenants,
+        |t| t.routed_passthrough.load(Ordering::Relaxed),
+    );
+    emit_metric(
+        &mut body,
+        "stack_intercept_cache_inserts_exact",
+        "Total exact cache inserts",
+        m.cache_inserts_exact.load(Ordering::Relaxed),
+        &m.tenants,
+        |t| t.cache_inserts_exact.load(Ordering::Relaxed),
+    );
+    emit_metric(
+        &mut body,
+        "stack_intercept_cache_inserts_semantic",
+        "Total semantic cache inserts",
+        m.cache_inserts_semantic.load(Ordering::Relaxed),
+        &m.tenants,
+        |t| t.cache_inserts_semantic.load(Ordering::Relaxed),
+    );
+    emit_metric(
+        &mut body,
+        "stack_intercept_reactive_failovers",
+        "Total reactive failover events",
+        m.reactive_failovers.load(Ordering::Relaxed),
+        &m.tenants,
+        |t| t.reactive_failovers.load(Ordering::Relaxed),
+    );
+
+    // Uptime gauge
+    body.push_str("# HELP stack_intercept_uptime_seconds Server uptime in seconds\n");
+    body.push_str("# TYPE stack_intercept_uptime_seconds gauge\n");
+    body.push_str(&format!(
+        "stack_intercept_uptime_seconds {}\n",
+        m.started_at.elapsed().as_secs()
+    ));
+
+    Response::builder()
+        .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+        .status(StatusCode::OK)
+        .body(Body::from(body))
+        .unwrap()
+        .into_response()
 }
 
 async fn admin_cache_summary(
@@ -617,10 +819,34 @@ async fn admin_cache_semantic_delete(
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     axum::extract::Path(context_key): axum::extract::Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Err(status) = check_admin_auth(&headers, addr, &state.config) {
         return (status, Json(serde_json::json!({"error": "unauthorized"}))).into_response();
     }
+
+    // If item_id query param is present, evict a single item from the bucket
+    if let Some(item_id_str) = params.get("item_id") {
+        let item_id: usize = match item_id_str.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "invalid item_id"})),
+                )
+                    .into_response();
+            }
+        };
+        let removed =
+            cache::evict_item(&state.index, &context_key, item_id);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({"removed": removed})),
+        )
+            .into_response();
+    }
+
+    // No item_id: remove the entire bucket
     let existed = state.index.remove(&context_key).is_some();
     (
         StatusCode::OK,
@@ -712,6 +938,14 @@ async fn handle_intercept(
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
+    // Check x-stack-intercept-no-semantic-cache header (allows per-request
+    // semantic cache opt-out while still using exact cache)
+    let no_semantic_cache = headers
+        .get("x-stack-intercept-no-semantic-cache")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
     // Evaluate routing BEFORE cache lookup so the cache key is namespace-aware
     let mut route = evaluate_routing(
         &payload,
@@ -748,9 +982,23 @@ async fn handle_intercept(
             .metrics
             .routed_fallback
             .fetch_add(1, Ordering::Relaxed);
+        state
+            .metrics
+            .tenants
+            .entry(Metrics::tenant_key(&tenant_id))
+            .or_default()
+            .routed_fallback
+            .fetch_add(1, Ordering::Relaxed);
     } else {
         state
             .metrics
+            .routed_passthrough
+            .fetch_add(1, Ordering::Relaxed);
+        state
+            .metrics
+            .tenants
+            .entry(Metrics::tenant_key(&tenant_id))
+            .or_default()
             .routed_passthrough
             .fetch_add(1, Ordering::Relaxed);
     }
@@ -781,6 +1029,13 @@ async fn handle_intercept(
             if let Some(entry) = cache.get(key_hash) {
                 println!("Exact cache HIT for key {}", &key_hash[..12]);
                 state.metrics.exact_hits.fetch_add(1, Ordering::Relaxed);
+                state
+                    .metrics
+                    .tenants
+                    .entry(Metrics::tenant_key(&tenant_id))
+                    .or_default()
+                    .exact_hits
+                    .fetch_add(1, Ordering::Relaxed);
                 let cached = entry.response_body.clone();
                 if is_streaming {
                     let stream = futures_util::stream::once(async move {
@@ -817,6 +1072,7 @@ async fn handle_intercept(
     let is_cache_eligible = is_eligible(&payload);
 
     let semantic_eligible = state.config.is_semantic_allowed()
+        && !no_semantic_cache
         && !has_no_store
         && is_cache_eligible
         && payload["response_format"].is_null()
@@ -856,6 +1112,13 @@ async fn handle_intercept(
                     if score >= ALIGNMENT_BAR {
                         println!("Semantic HIT! Similarity: {:.4}", score);
                         state.metrics.semantic_hits.fetch_add(1, Ordering::Relaxed);
+                        state
+                            .metrics
+                            .tenants
+                            .entry(Metrics::tenant_key(&tenant_id))
+                            .or_default()
+                            .semantic_hits
+                            .fetch_add(1, Ordering::Relaxed);
                         let cached = item.completion_response.clone();
                         if is_streaming {
                             let stream = futures_util::stream::once(async move {
@@ -914,6 +1177,13 @@ async fn handle_intercept(
     };
 
     state.metrics.misses.fetch_add(1, Ordering::Relaxed);
+    state
+        .metrics
+        .tenants
+        .entry(Metrics::tenant_key(&tenant_id))
+        .or_default()
+        .misses
+        .fetch_add(1, Ordering::Relaxed);
 
     let mut final_url = route.final_url.clone();
     let mut upstream_res = state
@@ -946,6 +1216,13 @@ async fn handle_intercept(
                 upstream_res.as_ref().map(|r| r.status())
             );
             state.metrics.reactive_failovers.fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .tenants
+                .entry(Metrics::tenant_key(&tenant_id))
+                .or_default()
+                .reactive_failovers
+                .fetch_add(1, Ordering::Relaxed);
 
             // Rewrite final_url to use fallback
             final_url = format!("{}/v1/chat/completions", state.config.fallback_base_url);
@@ -992,6 +1269,7 @@ async fn handle_intercept(
                 let state_clone = Arc::clone(&state);
                 let cache_key_hash_clone = cache_key_hash.clone();
                 let context_key_clone = context_key.clone();
+                let tenant_id_clone = tenant_id.clone();
 
                 let raw_byte_accumulator = Arc::new(std::sync::Mutex::new(Vec::new()));
                 let accumulator_clone = Arc::clone(&raw_byte_accumulator);
@@ -1031,6 +1309,13 @@ async fn handle_intercept(
                                     .metrics
                                     .cache_inserts_exact
                                     .fetch_add(1, Ordering::Relaxed);
+                                state_clone
+                                    .metrics
+                                    .tenants
+                                    .entry(Metrics::tenant_key(&tenant_id_clone))
+                                    .or_default()
+                                    .cache_inserts_exact
+                                    .fetch_add(1, Ordering::Relaxed);
                                 println!("Stream cached (exact).");
                                 persist_after_insert(&state_clone);
                             }
@@ -1052,6 +1337,13 @@ async fn handle_intercept(
                                 bucket.push(item);
                                 state_clone
                                     .metrics
+                                    .cache_inserts_semantic
+                                    .fetch_add(1, Ordering::Relaxed);
+                                state_clone
+                                    .metrics
+                                    .tenants
+                                    .entry(Metrics::tenant_key(&tenant_id_clone))
+                                    .or_default()
                                     .cache_inserts_semantic
                                     .fetch_add(1, Ordering::Relaxed);
                                 evict_bucket(
@@ -1105,6 +1397,13 @@ async fn handle_intercept(
                             .metrics
                             .cache_inserts_exact
                             .fetch_add(1, Ordering::Relaxed);
+                        state
+                            .metrics
+                            .tenants
+                            .entry(Metrics::tenant_key(&tenant_id))
+                            .or_default()
+                            .cache_inserts_exact
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                     persist_after_insert(&state);
                 }
@@ -1122,6 +1421,13 @@ async fn handle_intercept(
                         bucket.push(item);
                         state
                             .metrics
+                            .cache_inserts_semantic
+                            .fetch_add(1, Ordering::Relaxed);
+                        state
+                            .metrics
+                            .tenants
+                            .entry(Metrics::tenant_key(&tenant_id))
+                            .or_default()
                             .cache_inserts_semantic
                             .fetch_add(1, Ordering::Relaxed);
                         evict_bucket(&mut bucket, state.config.semantic_max_bucket_items);
@@ -1148,6 +1454,13 @@ async fn handle_intercept(
         Err(_) => {
             state
                 .metrics
+                .upstream_errors
+                .fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .tenants
+                .entry(Metrics::tenant_key(&tenant_id))
+                .or_default()
                 .upstream_errors
                 .fetch_add(1, Ordering::Relaxed);
             let body: Body = if is_streaming {
