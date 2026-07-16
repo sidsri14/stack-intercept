@@ -8,7 +8,7 @@ Add three operational features without touching the cache engine:
 2. **Admin HTTP routes** — `/admin/metrics`, `/admin/cache`, cache eviction under `/admin/`
 3. **Request-level metrics** — hit/miss/routing counters exposed via `/admin/metrics`
 
-HNSW indexing is deferred to v0.3.0.
+HNSW indexing remains deferred future work. It did not ship in v0.3.0.
 
 ## 1. Config File
 
@@ -315,7 +315,7 @@ struct AppState {
 
 - `DELETE /admin/cache` followed by restart → empty cache (snapshot was empty)
 
-## 7. Non-goals (v0.3.0)
+## 7. Non-goals (v0.2.1)
 
 - HNSW semantic indexing
 - Semantic bucket eviction by individual item ID

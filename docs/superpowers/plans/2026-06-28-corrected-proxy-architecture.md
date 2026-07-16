@@ -185,7 +185,9 @@ python test_proxy.py
 
 ## Architecture
 
-Compatibility → Safety → Exact cache → Semantic cache → HNSW → Dynamic routing → Benchmarks
+Compatibility → Safety → Exact cache → Semantic cache → Dynamic routing → Benchmarks
+
+Note: HNSW indexing remains deferred future work. The shipped v0.3.0 semantic cache uses capped per-context linear buckets plus optimized dot-product verification.
 
 See `docs/superpowers/plans/2026-06-28-corrected-proxy-architecture.md`.
 ```
