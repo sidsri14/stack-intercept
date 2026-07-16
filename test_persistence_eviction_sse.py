@@ -112,6 +112,10 @@ def start_proxy(extra_env=None):
     env = os.environ.copy()
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
     env["STACK_INTERCEPT_UPSTREAM_URL"] = f"http://127.0.0.1:{MOCK_PORT}"
+    env.pop("DEEPSEEK_API_KEY", None)
+    env.pop("STACK_INTERCEPT_FALLBACK_API_KEY", None)
+    env.pop("STACK_INTERCEPT_FALLBACK_URL", None)
+    env.pop("STACK_INTERCEPT_REACTIVE_FAILOVER", None)
     if extra_env:
         env.update(extra_env)
     proc = subprocess.Popen(
@@ -322,6 +326,10 @@ def test_sse_initial_upstream_failure():
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
     env["STACK_INTERCEPT_UPSTREAM_URL"] = "http://127.0.0.1:19999"  # nothing here
     env["STACK_INTERCEPT_STREAM_TIMEOUT"] = "2"  # fast timeout (not a real config, but doesn't hurt)
+    env.pop("DEEPSEEK_API_KEY", None)
+    env.pop("STACK_INTERCEPT_FALLBACK_API_KEY", None)
+    env.pop("STACK_INTERCEPT_FALLBACK_URL", None)
+    env.pop("STACK_INTERCEPT_REACTIVE_FAILOVER", None)
 
     proxy = subprocess.Popen(
         [proxy_binary()],
@@ -379,6 +387,10 @@ def test_non_streaming_upstream_failure():
     env = os.environ.copy()
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
     env["STACK_INTERCEPT_UPSTREAM_URL"] = "http://127.0.0.1:19998"
+    env.pop("DEEPSEEK_API_KEY", None)
+    env.pop("STACK_INTERCEPT_FALLBACK_API_KEY", None)
+    env.pop("STACK_INTERCEPT_FALLBACK_URL", None)
+    env.pop("STACK_INTERCEPT_REACTIVE_FAILOVER", None)
 
     proxy = subprocess.Popen(
         [proxy_binary()],

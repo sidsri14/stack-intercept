@@ -837,8 +837,7 @@ async fn admin_cache_semantic_delete(
                     .into_response();
             }
         };
-        let removed =
-            cache::evict_item(&state.index, &context_key, item_id);
+        let removed = cache::evict_item(&state.index, &context_key, item_id);
         return (
             StatusCode::OK,
             Json(serde_json::json!({"removed": removed})),
@@ -896,6 +895,9 @@ async fn admin_config(
         "cache_path": state.config.cache_path,
         "disable_persistence": state.config.disable_persistence,
         "max_body_size": state.config.max_body_size,
+        "reactive_failover": state.config.reactive_failover,
+        "failover_model": state.config.failover_model,
+        "failover_status_codes": state.config.failover_status_codes,
     });
     (StatusCode::OK, Json(resp)).into_response()
 }
@@ -1207,7 +1209,10 @@ async fn handle_intercept(
     if should_failover {
         let is_failed = match &upstream_res {
             Err(_) => true,
-            Ok(res) => state.config.failover_status_codes.contains(&res.status().as_u16()),
+            Ok(res) => state
+                .config
+                .failover_status_codes
+                .contains(&res.status().as_u16()),
         };
 
         if is_failed {
@@ -1215,7 +1220,10 @@ async fn handle_intercept(
                 "Reactive failover triggered! Upstream request failed (result: {:?}). Routing to fallback...",
                 upstream_res.as_ref().map(|r| r.status())
             );
-            state.metrics.reactive_failovers.fetch_add(1, Ordering::Relaxed);
+            state
+                .metrics
+                .reactive_failovers
+                .fetch_add(1, Ordering::Relaxed);
             state
                 .metrics
                 .tenants
@@ -1226,15 +1234,9 @@ async fn handle_intercept(
 
             // Rewrite final_url to use fallback
             final_url = format!("{}/v1/chat/completions", state.config.fallback_base_url);
-            
+
             // Rewrite final_auth to use fallback API key
-            final_auth = as_bearer(
-                state
-                    .config
-                    .fallback_api_key
-                    .as_ref()
-                    .unwrap(),
-            );
+            final_auth = as_bearer(state.config.fallback_api_key.as_ref().unwrap());
 
             // Rewrite payload model name if failover_model is configured
             if let Some(ref fm) = state.config.failover_model {

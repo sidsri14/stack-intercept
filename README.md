@@ -4,14 +4,14 @@
 [![GitHub Release](https://img.shields.io/github/v/release/sidsri14/stack-intercept?logo=github)](https://github.com/sidsri14/stack-intercept/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**Local OpenAI-compatible cost-control proxy.** Sits between your app and an LLM provider. Caches responses for zero-cost repeats. Optionally routes simple prompts to cheaper models. One binary, no dependencies.
+**Local OpenAI-compatible cost-control and resilience proxy.** Sits between your app and an LLM provider. Caches responses for zero-cost repeats, optionally routes simple prompts to cheaper models, and can fail over to a fallback provider on transient upstream errors.
 
 ```
 Your App  →  StackIntercept (:8080)  →  LLM Provider (DeepSeek, OpenAI, etc.)
                     │
                     ├─ Exact cache (default) — identical requests, instant replay
                     ├─ Semantic cache (opt-in) — similar prompts, same context → hit
-                    └─ Model routing (opt-in) — gpt-4o for simple Qs → deepseek-chat
+                    └─ Model routing / failover (opt-in) — fallback provider on safe routes or upstream errors
 ```
 
 ## Why
@@ -21,16 +21,33 @@ LLM API costs add up fast. Most apps send the same prompts repeatedly — same s
 - **Exact cache**: Repeat a request → get the cached response. Zero latency, zero cost.
 - **Semantic cache**: Ask "How do I delete a file in Python?" then "How do I remove a file?" — second hits cache if the conversation context matches.
 - **Model routing**: Send `gpt-4o` for everything → simple prompts automatically go to `deepseek-chat` (~5% the cost). Opt-in, transparent, safe.
+- **Reactive failover**: Retry against a fallback provider when the primary upstream returns configured 5xx responses or transport errors. Opt-in.
 
 ## Quickstart (1 minute)
 
-### 1. Set your API key
+### Docker quickstart
+
+```bash
+docker compose up --build
+
+curl http://127.0.0.1:8080/admin/config \
+  -H "x-admin-key: dev-test-key"
+
+curl http://127.0.0.1:8080/admin/metrics/prometheus \
+  -H "x-admin-key: dev-test-key"
+```
+
+The bundled Compose file is development-oriented. For real deployments, set your provider keys through your secret manager or `.env`, change `STACK_INTERCEPT_ADMIN_KEY`, and keep the proxy behind TLS/private networking.
+
+### Local Rust quickstart
+
+#### 1. Set your API key
 
 ```bash
 export DEEPSEEK_API_KEY="sk-your-key-here"
 ```
 
-### 2. Start the proxy
+#### 2. Start the proxy
 
 ```bash
 cargo run
@@ -40,14 +57,14 @@ cargo run
 StackIntercept online at http://127.0.0.1:8080
 ```
 
-### 3. Point your app at it
+#### 3. Point your app at it
 
 ```python
 from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8080", api_key="sk-your-key")
 ```
 
-### 4. See it work
+#### 4. See it work
 
 ```bash
 # First request — cache miss, forwards to provider
@@ -62,12 +79,12 @@ Pre-built binaries for Linux and Windows on the [Releases page](https://github.c
 
 ```bash
 # Linux x86_64
-curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.2.2/stack-intercept-v0.2.2-x86_64-unknown-linux-gnu.tar.gz
-tar xzf stack-intercept-v0.2.2-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.3.0/stack-intercept-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf stack-intercept-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
 cd stack-intercept
 
 # Windows x86_64
-curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.2.2/stack-intercept-v0.2.2-x86_64-pc-windows-msvc.zip
+curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.3.0/stack-intercept-v0.3.0-x86_64-pc-windows-msvc.zip
 # Or download the .zip from the Releases page and extract
 ```
 
@@ -132,6 +149,26 @@ cargo run
 - If no fallback API key is configured, routing is forced to passthrough (no auth leakage)
 - Cache keys include routing namespace — routed and passthrough responses never share a cache slot
 
+### Reactive failover (opt-in)
+
+Enable with `STACK_INTERCEPT_REACTIVE_FAILOVER=true`. If the primary upstream request fails with a transport error or one of the configured status codes, StackIntercept retries once against `STACK_INTERCEPT_FALLBACK_URL` using `STACK_INTERCEPT_FALLBACK_API_KEY`.
+
+```bash
+export STACK_INTERCEPT_REACTIVE_FAILOVER=true
+export STACK_INTERCEPT_UPSTREAM_URL=https://api.openai.com
+export STACK_INTERCEPT_FALLBACK_URL=https://api.deepseek.com
+export STACK_INTERCEPT_FALLBACK_API_KEY=sk-deepseek-fallback-key
+export STACK_INTERCEPT_FAILOVER_MODEL=deepseek-chat
+export STACK_INTERCEPT_FAILOVER_STATUS_CODES=500,502,503,504,429
+cargo run
+```
+
+Failover is intentionally conservative:
+- Disabled by default.
+- Requires a configured fallback API key.
+- Retries once; it is not a provider pool, load balancer, or circuit breaker.
+- Does not rewrite streaming chunks; route headers report the actual route/model.
+
 **Transparent headers on every response:**
 
 | Header | Example | Meaning |
@@ -159,6 +196,9 @@ cargo run
 | `STACK_INTERCEPT_SEMANTIC_TTL_SECS` | `3600` | Semantic cache TTL (seconds) |
 | `STACK_INTERCEPT_CACHE_PATH` | (none) | File path for disk persistence |
 | `STACK_INTERCEPT_DISABLE_PERSISTENCE` | `false` | Skip disk I/O for cache snapshots |
+| `STACK_INTERCEPT_REACTIVE_FAILOVER` | `false` | Retry failed primary requests against fallback provider |
+| `STACK_INTERCEPT_FAILOVER_MODEL` | (none) | Optional model rewrite for reactive failover |
+| `STACK_INTERCEPT_FAILOVER_STATUS_CODES` | `500,502,503,504` | Comma-separated upstream statuses that trigger failover |
 
 ### TOML config file
 
@@ -187,6 +227,7 @@ All admin routes live under `/admin/`. Local-only by default; require `x-admin-k
 | Route | Method | Description |
 |---|---|---|
 | `/admin/metrics` | GET | Hit/miss counters, uptime, routing stats |
+| `/admin/metrics/prometheus` | GET | Prometheus text-format counters |
 | `/admin/cache` | GET | Cache summary (entries, limits, TTL) |
 | `/admin/cache` | DELETE | Flush all caches, write empty snapshot |
 | `/admin/cache/exact/:key` | DELETE | Evict single exact cache entry |
@@ -196,6 +237,9 @@ All admin routes live under `/admin/`. Local-only by default; require `x-admin-k
 ```bash
 # Metrics (loopback: no auth needed)
 curl http://127.0.0.1:8080/admin/metrics
+
+# Prometheus format
+curl http://127.0.0.1:8080/admin/metrics/prometheus
 
 # Cache summary
 curl http://127.0.0.1:8080/admin/cache
@@ -262,6 +306,7 @@ cargo run
 python test_mock_upstream.py    # 59 checks — exact cache, streaming, tenant isolation, admin API
 python test_routing.py          # 60 checks — routing safety, headers, auth, fallback key
 python test_persistence_eviction_sse.py  # 24 checks — persistence, eviction, SSE errors
+python test_failover.py         # 10 checks — reactive failover and model rewrite
 ```
 
 ## Demo
@@ -280,7 +325,7 @@ python benchmark.py
 
 ## What it's not
 
-- Not a load balancer. No round-robin, health checks, or failover across providers.
+- Not a load balancer. No round-robin, health checks, circuit breaking, or provider pool. Reactive failover is a single opt-in retry path.
 - Not an API gateway. No rate limiting, key management, or user auth.
 - Not a single-binary deployment for semantic mode (requires model weights).
 - Not a streaming-aware semantic cache (SSE responses are cached but not semantically deduplicated in streaming).

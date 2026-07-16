@@ -11,8 +11,8 @@ Deploying StackIntercept on a Linux VPS for production use.
 
 ```bash
 # Download the latest release
-curl -LO https://github.com/sidsri14/stack-intercept/releases/latest/download/stack-intercept-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
-tar xzf stack-intercept-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/sidsri14/stack-intercept/releases/latest/download/stack-intercept-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf stack-intercept-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
 cd stack-intercept
 
 # Configure
@@ -104,6 +104,9 @@ STACK_INTERCEPT_CACHE_PATH=/var/cache/stack-intercept/snapshot.msgpack
 # STACK_INTERCEPT_UPSTREAM_URL=https://api.deepseek.com
 # STACK_INTERCEPT_FALLBACK_URL=https://api.deepseek.com
 # STACK_INTERCEPT_ALLOW_MODEL_REWRITE=false
+# STACK_INTERCEPT_REACTIVE_FAILOVER=false
+# STACK_INTERCEPT_FAILOVER_MODEL=deepseek-chat
+# STACK_INTERCEPT_FAILOVER_STATUS_CODES=500,502,503,504
 ```
 
 Make sure the runtime user can write to the cache directory:
@@ -121,6 +124,30 @@ Persistence can be disabled explicitly:
 ```bash
 export STACK_INTERCEPT_DISABLE_PERSISTENCE=true
 ```
+
+## Reactive failover
+
+Reactive failover is disabled by default. Enable it only after configuring a fallback provider key:
+
+```bash
+STACK_INTERCEPT_REACTIVE_FAILOVER=true
+STACK_INTERCEPT_FALLBACK_URL=https://api.deepseek.com
+STACK_INTERCEPT_FALLBACK_API_KEY=sk-your-fallback-key
+STACK_INTERCEPT_FAILOVER_MODEL=deepseek-chat
+STACK_INTERCEPT_FAILOVER_STATUS_CODES=500,502,503,504,429
+```
+
+This is a single retry path for transient failures, not a load balancer or circuit breaker.
+
+## Prometheus metrics
+
+Prometheus text metrics are exposed at:
+
+```bash
+curl http://127.0.0.1:8080/admin/metrics/prometheus
+```
+
+If `STACK_INTERCEPT_ADMIN_KEY` is set, include `x-admin-key`.
 
 ## Semantic mode
 
@@ -190,7 +217,9 @@ systemctl start stack-intercept
 - [ ] Cache path points to a writable directory if persistence enabled
 - [ ] Process runs as a dedicated non-root user
 - [ ] Routing remains opt-in via `STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`
+- [ ] Reactive failover remains opt-in via `STACK_INTERCEPT_REACTIVE_FAILOVER=true`
 - [ ] Sensitive workloads use `x-stack-intercept-no-route: true` when model rewriting is not acceptable
+- [ ] Sensitive workloads use `x-stack-intercept-no-semantic-cache: true` when semantic cache reuse is not acceptable
 
 ## Health check
 

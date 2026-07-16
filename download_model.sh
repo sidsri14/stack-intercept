@@ -2,7 +2,7 @@
 # Download bge-small-en-v1.5 model weights for StackIntercept
 set -euo pipefail
 
-MODEL_DIR="model"
+MODEL_DIR="${1:-model}"
 mkdir -p "$MODEL_DIR"
 
 echo "Downloading bge-small-en-v1.5 model weights..."

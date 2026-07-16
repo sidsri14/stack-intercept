@@ -258,7 +258,8 @@ impl ProxyConfig {
             self.failover_model = Some(v);
         }
         if let Ok(v) = std::env::var("STACK_INTERCEPT_FAILOVER_STATUS_CODES") {
-            let codes: Vec<u16> = v.split(',')
+            let codes: Vec<u16> = v
+                .split(',')
                 .map(|s| s.trim())
                 .filter_map(|s| s.parse::<u16>().ok())
                 .collect();
@@ -322,7 +323,7 @@ mod tests {
                 "STACK_INTERCEPT_CONFIG",
                 "/tmp/__stack_intercept_does-not-exist-test.toml",
             )
-            .args(&["config_fatal_missing_file_subprocess_check", "--nocapture"])
+            .args(["config_fatal_missing_file_subprocess_check", "--nocapture"])
             .output()
             .unwrap();
         assert!(

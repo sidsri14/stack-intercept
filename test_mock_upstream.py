@@ -115,6 +115,10 @@ def start_proxy(extra_env=None):
     env["STACK_INTERCEPT_CACHE_MODE"] = "exact"
     env["STACK_INTERCEPT_UPSTREAM_URL"] = f"http://127.0.0.1:{MOCK_PORT}"
     env["STACK_INTERCEPT_DISABLE_PERSISTENCE"] = "true"
+    env.pop("DEEPSEEK_API_KEY", None)
+    env.pop("STACK_INTERCEPT_FALLBACK_API_KEY", None)
+    env.pop("STACK_INTERCEPT_FALLBACK_URL", None)
+    env.pop("STACK_INTERCEPT_REACTIVE_FAILOVER", None)
     if extra_env:
         env.update(extra_env)
     proc = subprocess.Popen(
@@ -477,7 +481,15 @@ def run_admin_tests():
     print("Test 15: GET /admin/config — returns 200 with expected keys")
     status, body, _ = send_admin_get("/config")
     check("admin/config status 200", status == 200, f"(status: {status})")
-    for key in ("cache_mode", "upstream_base_url", "exact_max_entries", "admin_key"):
+    for key in (
+        "cache_mode",
+        "upstream_base_url",
+        "exact_max_entries",
+        "admin_key",
+        "reactive_failover",
+        "failover_model",
+        "failover_status_codes",
+    ):
         check(f"admin/config has key '{key}'", key in body, f"(got keys: {list(body.keys())})")
     print()
 
