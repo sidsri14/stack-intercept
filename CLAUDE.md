@@ -4,7 +4,7 @@
 A local Rust LLM proxy that intercepts OpenAI SDK calls for caching and model routing. Single binary deployable on a cheap VPS. Uses Candle (Rust ML framework) for local BGE-small-en-v1.5 embeddings on CPU.
 
 ## Architecture Priority Order
-Compatibility → Safety → Exact cache → Semantic cache → HNSW → Dynamic routing → Benchmarks
+Compatibility → Safety → Exact cache → Semantic cache → Dynamic routing → Benchmarks
 
 Routing is opt-in (`STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`). Cache keys include routing namespace to prevent cross-contamination. Route headers are added to all responses for transparency.
 
@@ -51,8 +51,10 @@ Upstream provider SSE bytes are forwarded as-is via `axum::body::Body::from_stre
 ### Semantic safety
 Semantic search is never done on the last-user-message alone. It requires matching exact context key (everything except the last message) first, then embedding similarity within that bucket. This prevents unsafe cache hits across different tenants, system prompts, or models.
 
-### HNSW not needed in prototype
-0–10k entries: `Vec<CacheItem>` + linear cosine scan. fast-hnsw is in Cargo.toml but unused — stays as placeholder for >10k entries.
+### Semantic search implementation
+Semantic mode uses a capped per-context `Vec<CacheItem>` bucket and cosine dot-product verification. The bucket cap keeps lookup cost bounded, and the dot-product path uses runtime AVX acceleration on x86_64 with an unrolled scalar fallback.
+
+HNSW is not implemented in v0.3.0. Do not claim HNSW support unless a real indexed implementation, config surface, persistence behavior, and correctness tests are added.
 
 ### No streaming request body parsing
 `/v1/chat/completions` request bodies are normal JSON. Buffer with 5 MB max body size, JSON parse normally. Only the response is streaming.
@@ -123,7 +125,6 @@ Set `x-stack-intercept-no-route: true` on any request to bypass routing entirely
 - `sha2 0.10` — Deterministic cache key hashing
 - `rmp-serde` — MessagePack serialization for disk snapshot persistence
 - `toml 0.8` — Config file parsing
-- `fast-hnsw 1.0` — Unused, placeholder for HNSW index
 - `serde/serde_json`, `tokio`, `futures-util`, `tracing`, `anyhow`
 
 ## Cross-compilation Target

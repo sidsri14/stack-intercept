@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Optimized semantic-cache vector dot product with a runtime AVX path on x86_64 and an unrolled scalar fallback.
+- Removed the unused `fast-hnsw` dependency and marked the old HNSW v0.3.0 spec as a historical/deferred draft.
+- Updated README wording to avoid implying zero-latency behavior or shipped HNSW support.
+
 ## [0.3.0] - 2026-07-16
 
 ### Added

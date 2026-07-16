@@ -343,7 +343,68 @@ fn as_bearer(key: &str) -> String {
 }
 
 fn compute_vector_dot(v1: &[f32], v2: &[f32]) -> f32 {
-    v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum()
+    if v1.len() != v2.len() {
+        return 0.0;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx") {
+            // SAFETY: guarded by runtime AVX feature detection. The function
+            // only uses unaligned loads within bounds checked by the loop.
+            unsafe {
+                return compute_vector_dot_avx(v1, v2);
+            }
+        }
+    }
+
+    compute_vector_dot_unrolled(v1, v2)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn compute_vector_dot_avx(v1: &[f32], v2: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+
+    let len = v1.len();
+    let mut sum_reg = _mm256_setzero_ps();
+    let mut i = 0usize;
+
+    while i + 8 <= len {
+        let va = _mm256_loadu_ps(v1.as_ptr().add(i));
+        let vb = _mm256_loadu_ps(v2.as_ptr().add(i));
+        sum_reg = _mm256_add_ps(sum_reg, _mm256_mul_ps(va, vb));
+        i += 8;
+    }
+
+    let mut lanes = [0.0f32; 8];
+    _mm256_storeu_ps(lanes.as_mut_ptr(), sum_reg);
+    let mut total = lanes.iter().sum::<f32>();
+
+    while i < len {
+        total += v1[i] * v2[i];
+        i += 1;
+    }
+
+    total
+}
+
+fn compute_vector_dot_unrolled(v1: &[f32], v2: &[f32]) -> f32 {
+    let mut chunks_a = v1.chunks_exact(4);
+    let mut chunks_b = v2.chunks_exact(4);
+    let mut total = 0.0f32;
+
+    for (a, b) in chunks_a.by_ref().zip(chunks_b.by_ref()) {
+        total += a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    }
+
+    total
+        + chunks_a
+            .remainder()
+            .iter()
+            .zip(chunks_b.remainder())
+            .map(|(a, b)| a * b)
+            .sum::<f32>()
 }
 
 /// Add transparent route headers to a response builder.
@@ -1493,6 +1554,21 @@ async fn handle_intercept(
 mod admin_auth_tests {
     use super::*;
     use crate::config::ProxyConfig;
+
+    #[test]
+    fn test_compute_vector_dot_matches_expected() {
+        let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let b = vec![0.5, -1.0, 2.0, 0.25, 3.0, -0.5, 1.5, 2.0, -2.0];
+        let expected = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum::<f32>();
+
+        assert!((compute_vector_dot(&a, &b) - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_compute_vector_dot_empty_and_mismatched() {
+        assert_eq!(compute_vector_dot(&[], &[]), 0.0);
+        assert_eq!(compute_vector_dot(&[1.0, 2.0], &[1.0]), 0.0);
+    }
 
     #[test]
     fn test_is_loopback_true() {

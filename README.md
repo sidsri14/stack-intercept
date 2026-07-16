@@ -9,7 +9,7 @@
 ```
 Your App  →  StackIntercept (:8080)  →  LLM Provider (DeepSeek, OpenAI, etc.)
                     │
-                    ├─ Exact cache (default) — identical requests, instant replay
+                    ├─ Exact cache (default) — identical requests, local replay
                     ├─ Semantic cache (opt-in) — similar prompts, same context → hit
                     └─ Model routing / failover (opt-in) — fallback provider on safe routes or upstream errors
 ```
@@ -18,7 +18,7 @@ Your App  →  StackIntercept (:8080)  →  LLM Provider (DeepSeek, OpenAI, etc.
 
 LLM API costs add up fast. Most apps send the same prompts repeatedly — same system prompt, same instructions, same questions. StackIntercept eliminates that waste:
 
-- **Exact cache**: Repeat a request → get the cached response. Zero latency, zero cost.
+- **Exact cache**: Repeat a request → get the cached response from memory with no upstream API call.
 - **Semantic cache**: Ask "How do I delete a file in Python?" then "How do I remove a file?" — second hits cache if the conversation context matches.
 - **Model routing**: Send `gpt-4o` for everything → simple prompts automatically go to `deepseek-chat` (~5% the cost). Opt-in, transparent, safe.
 - **Reactive failover**: Retry against a fallback provider when the primary upstream returns configured 5xx responses or transport errors. Opt-in.
@@ -68,7 +68,7 @@ client = OpenAI(base_url="http://127.0.0.1:8080", api_key="sk-your-key")
 
 ```bash
 # First request — cache miss, forwards to provider
-# Second request — cache hit, instant response
+# Second request — cache hit, local replay
 python test_mock_upstream.py    # 24 checks, no API key needed
 python test_routing.py          # 60 checks, no API key needed
 ```
@@ -92,7 +92,7 @@ curl -LO https://github.com/sidsri14/stack-intercept/releases/download/v0.3.0/st
 
 ### Caching (always on, default: exact)
 
-Every response is cached by its SHA256 hash of the full request payload, provider, and tenant. Repeat a request verbatim → instant response. No API call made.
+Every response is cached by its SHA256 hash of the full request payload, provider, and tenant. Repeat a request verbatim and StackIntercept replays the cached response locally. No API call made.
 
 ```bash
 # First request: cache miss → provider → stored
@@ -102,7 +102,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"Hello"}],"temperature":0}'
 # Response: x-stack-intercept: miss
 
-# Same request again: cache hit → instant
+# Same request again: cache hit → local replay
 # Response: x-stack-intercept: hit
 ```
 
@@ -127,7 +127,7 @@ STACK_INTERCEPT_CACHE_MODE=semantic cargo run
 
 Safety design:
 - Context key hashes everything **except** the last user message (system prompt, conversation history, model, tenant, tools schema)
-- Semantic scan only runs within matching context buckets
+- Semantic scan only runs within matching context buckets and uses a capped per-bucket linear scan with an AVX-accelerated dot-product path on supported x86_64 CPUs.
 - Similarity threshold: 0.93 cosine
 
 ### Model routing (opt-in)
@@ -261,7 +261,7 @@ curl -X DELETE http://127.0.0.1:8080/admin/cache
                     │                       │
                     │  1. Evaluate routing  │  ← opt-in, runs before cache
                     │  2. Exact cache check │  ← O(1) SHA256 lookup
-                    │  3. Semantic scan     │  ← if semantic mode, within context bucket
+                    │  3. Semantic scan     │  ← capped context bucket + optimized dot product
                     │  4. Forward to LLM    │  ← original or routed provider
                     │  5. Cache response    │  ← on success
                     │  6. Return + headers  │  ← transparent routing info
