@@ -1,0 +1,21 @@
+services:
+  stack-intercept:
+    build: .
+    container_name: stack-intercept-trial
+    ports:
+      - "8080:8080"
+    environment:
+      # Safe trial defaults: exact cache only, no model rewrite, no semantic model.
+      - STACK_INTERCEPT_CACHE_MODE=exact
+      - STACK_INTERCEPT_UPSTREAM_URL=${STACK_INTERCEPT_UPSTREAM_URL:-https://api.openai.com}
+      - STACK_INTERCEPT_TENANT_ID_HEADER=${STACK_INTERCEPT_TENANT_ID_HEADER:-x-tenant-id}
+      - STACK_INTERCEPT_ADMIN_KEY=${STACK_INTERCEPT_ADMIN_KEY:-change-me-before-remote-use}
+      - STACK_INTERCEPT_CACHE_PATH=/data/cache_state.bin
+      - STACK_INTERCEPT_ALLOW_MODEL_REWRITE=false
+      - STACK_INTERCEPT_REACTIVE_FAILOVER=false
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+

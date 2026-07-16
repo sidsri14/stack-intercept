@@ -39,6 +39,24 @@ curl http://127.0.0.1:8080/admin/metrics/prometheus \
 
 The bundled Compose file is development-oriented. For real deployments, set your provider keys through your secret manager or `.env`, change `STACK_INTERCEPT_ADMIN_KEY`, and keep the proxy behind TLS/private networking.
 
+### Staging trial package
+
+For a safe exact-cache-only staging trial:
+
+```bash
+export OPENAI_API_KEY="sk-your-key"
+export STACK_INTERCEPT_ADMIN_KEY="replace-this"
+docker compose -f docker-compose.trial.yml up --build
+```
+
+Then point one worker or local script at `http://127.0.0.1:8080/v1`.
+
+Trial docs:
+- [Trial runbook](docs/trial-runbook.md)
+- [Security notes](docs/security.md)
+- [OpenAI Python example](examples/openai-python)
+- [OpenAI Node example](examples/openai-node)
+
 ### Local Rust quickstart
 
 #### 1. Set your API key
