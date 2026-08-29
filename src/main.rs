@@ -390,21 +390,16 @@ unsafe fn compute_vector_dot_avx(v1: &[f32], v2: &[f32]) -> f32 {
 }
 
 fn compute_vector_dot_unrolled(v1: &[f32], v2: &[f32]) -> f32 {
-    let mut chunks_a = v1.chunks_exact(4);
-    let mut chunks_b = v2.chunks_exact(4);
+    let (chunks_a, tail_a) = v1.as_chunks::<4>();
+    let (chunks_b, tail_b) = v2.as_chunks::<4>();
+
     let mut total = 0.0f32;
 
-    for (a, b) in chunks_a.by_ref().zip(chunks_b.by_ref()) {
+    for (a, b) in chunks_a.iter().zip(chunks_b.iter()) {
         total += a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
     }
 
-    total
-        + chunks_a
-            .remainder()
-            .iter()
-            .zip(chunks_b.remainder())
-            .map(|(a, b)| a * b)
-            .sum::<f32>()
+    total + tail_a.iter().zip(tail_b).map(|(a, b)| a * b).sum::<f32>()
 }
 
 /// Add transparent route headers to a response builder.
