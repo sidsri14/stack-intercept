@@ -33,6 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check
       - run: cargo build
+      - run: cargo test
 
   integration:
     needs: [check, build]
