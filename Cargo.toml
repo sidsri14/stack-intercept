@@ -2,6 +2,11 @@
 name = "stack-intercept"
 version = "0.3.0"
 edition = "2021"
+license = "MIT"
+description = "Local OpenAI-compatible cost-control proxy: exact/semantic caching, model routing, and reactive failover"
+repository = "https://github.com/sidsri14/stack-intercept"
+keywords = ["openai", "proxy", "cache", "llm", "semantic-cache"]
+categories = ["network-programming", "web-programming"]
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
