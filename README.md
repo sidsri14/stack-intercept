@@ -100,7 +100,7 @@ client = OpenAI(base_url="http://127.0.0.1:8080", api_key="sk-your-key")
 ```bash
 # First request — cache miss, forwards to provider
 # Second request — cache hit, local replay
-python test_mock_upstream.py    # 58 checks, no API key needed
+python test_mock_upstream.py    # 64 checks, no API key needed
 python test_routing.py          # 60 checks, no API key needed
 ```
 
@@ -333,7 +333,7 @@ cargo build --release
 cargo run
 
 # Test (no API key, no model weights needed)
-python test_mock_upstream.py    # 58 checks — exact cache, streaming, tenant isolation, admin API
+python test_mock_upstream.py    # 64 checks — exact cache, streaming, tenant isolation, admin API
 python test_routing.py          # 60 checks — routing safety, headers, auth, fallback key
 python test_persistence_eviction_sse.py  # 24 checks — persistence, eviction, SSE errors
 python test_failover.py         # 10 checks — reactive failover and model rewrite
