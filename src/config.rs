@@ -67,9 +67,9 @@ impl ProxyConfig {
             semantic_ttl_secs: 3600,
             cache_path: None,
             disable_persistence: false,
-            reactive_failover: false,
+            reactive_failover: true,
             failover_model: None,
-            failover_status_codes: vec![500, 502, 503, 504],
+            failover_status_codes: vec![429, 500, 502, 503, 504],
         }
     }
 

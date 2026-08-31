@@ -4,24 +4,37 @@
 [![GitHub Release](https://img.shields.io/github/v/release/sidsri14/stack-intercept?logo=github)](https://github.com/sidsri14/stack-intercept/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**Local OpenAI-compatible cost-control and resilience proxy.** Sits between your app and an LLM provider. Caches responses for zero-cost repeats, optionally routes simple prompts to cheaper models, and can fail over to a fallback provider on transient upstream errors.
+**High-performance in-VPC LLM proxy in Rust: transparent upstream failover, in-memory SHA-256 exact deduplication, and Prometheus observability.** Sits between your app and an LLM provider. Deduplicates identical requests locally, fails over to a fallback provider on 429 rate limits and 5xx upstream degradation, and optionally routes simple prompts to cheaper models.
 
 ```
 Your App  →  StackIntercept (:8080)  →  LLM Provider (DeepSeek, OpenAI, etc.)
                     │
                     ├─ Exact cache (default) — identical requests, local replay
                     ├─ Semantic cache (opt-in) — similar prompts, same context → hit
-                    └─ Model routing / failover (opt-in) — fallback provider on safe routes or upstream errors
+                    └─ Failover (on by default) — re-dispatch on 429/5xx; model routing (opt-in)
 ```
 
 ## Why
 
-LLM API costs add up fast. Most apps send the same prompts repeatedly — same system prompt, same instructions, same questions. StackIntercept eliminates that waste:
+Providers throttle and degrade; LLM API costs add up fast. StackIntercept sits between your app and its LLM provider and absorbs both:
 
-- **Exact cache**: Repeat a request → get the cached response from memory with no upstream API call.
+- **Transparent failover**: When the primary upstream returns a 429 rate limit or 5xx degradation, the request is re-dispatched once to the configured fallback endpoint. On by default, a no-op until a fallback API key is configured.
+- **Exact deduplication**: Repeat a request verbatim → get the cached response from memory with no upstream API call.
 - **Semantic cache**: Ask "How do I delete a file in Python?" then "How do I remove a file?" — second hits cache if the conversation context matches.
 - **Model routing**: Send `gpt-4o` for everything → simple prompts automatically go to `deepseek-chat` (~5% the cost). Opt-in, transparent, safe.
-- **Reactive failover**: Retry against a fallback provider when the primary upstream returns configured 5xx responses or transport errors. Opt-in.
+
+### Feature Reality Matrix
+
+What StackIntercept implements — and what it deliberately does not:
+
+| Status | Capability | Detail |
+|---|---|---|
+| [x] | Transparent single-hop failover | On 429 / 5xx, re-dispatch to the configured fallback endpoint. One retry, transparent route headers. |
+| [x] | In-memory exact-match caching | SHA-256 over normalized (recursively key-sorted) JSON; local replay, no upstream call. |
+| [x] | First-class deterministic mode | `STACK_INTERCEPT_CACHE_MODE=exact` — zero neural model footprint. |
+| [x] | Tenant-labeled Prometheus metrics | `/admin/metrics/prometheus`. |
+| [ ] | Neural semantic caching | Available via Candle BGE (opt-in), off by default in exact mode. |
+| [ ] | Tenant rate-limiting / spend caps | Omitted — YAGNI; handled downstream or via edge WAF. |
 
 ## Quickstart (1 minute)
 
@@ -167,23 +180,22 @@ cargo run
 - If no fallback API key is configured, routing is forced to passthrough (no auth leakage)
 - Cache keys include routing namespace — routed and passthrough responses never share a cache slot
 
-### Reactive failover (opt-in)
+### Reactive failover (on by default)
 
-Enable with `STACK_INTERCEPT_REACTIVE_FAILOVER=true`. If the primary upstream request fails with a transport error or one of the configured status codes, StackIntercept retries once against `STACK_INTERCEPT_FALLBACK_URL` using `STACK_INTERCEPT_FALLBACK_API_KEY`.
+If the primary upstream request fails with a transport error or one of the configured status codes, StackIntercept retries once against `STACK_INTERCEPT_FALLBACK_URL` using `STACK_INTERCEPT_FALLBACK_API_KEY`. On by default; disable with `STACK_INTERCEPT_REACTIVE_FAILOVER=false`.
 
 ```bash
-export STACK_INTERCEPT_REACTIVE_FAILOVER=true
 export STACK_INTERCEPT_UPSTREAM_URL=https://api.openai.com
 export STACK_INTERCEPT_FALLBACK_URL=https://api.deepseek.com
 export STACK_INTERCEPT_FALLBACK_API_KEY=sk-deepseek-fallback-key
 export STACK_INTERCEPT_FAILOVER_MODEL=deepseek-chat
-export STACK_INTERCEPT_FAILOVER_STATUS_CODES=500,502,503,504,429
 cargo run
 ```
 
+Failover handles 429 rate limits and 5xx upstream degradation by re-dispatching to the configured fallback endpoint. Upstream payloads must be compatible with both models if routing across different provider APIs.
+
 Failover is intentionally conservative:
-- Disabled by default.
-- Requires a configured fallback API key.
+- No-op until a fallback API key is configured.
 - Retries once; it is not a provider pool, load balancer, or circuit breaker.
 - Does not rewrite streaming chunks; route headers report the actual route/model.
 
@@ -214,9 +226,9 @@ Failover is intentionally conservative:
 | `STACK_INTERCEPT_SEMANTIC_TTL_SECS` | `3600` | Semantic cache TTL (seconds) |
 | `STACK_INTERCEPT_CACHE_PATH` | (none) | File path for disk persistence |
 | `STACK_INTERCEPT_DISABLE_PERSISTENCE` | `false` | Skip disk I/O for cache snapshots |
-| `STACK_INTERCEPT_REACTIVE_FAILOVER` | `false` | Retry failed primary requests against fallback provider |
+| `STACK_INTERCEPT_REACTIVE_FAILOVER` | `true` | Re-dispatch 429/5xx failures to the fallback provider |
 | `STACK_INTERCEPT_FAILOVER_MODEL` | (none) | Optional model rewrite for reactive failover |
-| `STACK_INTERCEPT_FAILOVER_STATUS_CODES` | `500,502,503,504` | Comma-separated upstream statuses that trigger failover |
+| `STACK_INTERCEPT_FAILOVER_STATUS_CODES` | `429,500,502,503,504` | Comma-separated upstream statuses that trigger failover |
 
 ### TOML config file
 
@@ -326,6 +338,8 @@ python test_routing.py          # 60 checks — routing safety, headers, auth, f
 python test_persistence_eviction_sse.py  # 24 checks — persistence, eviction, SSE errors
 python test_failover.py         # 10 checks — reactive failover and model rewrite
 ```
+
+> **Reproducibility proof:** `test_routing.py` (60 checks) and `test_failover.py` (10 checks) run entirely against local mock upstreams — no API key, no model weights. They exercise the routing safety boundaries and the failover path (429/5xx → fallback re-dispatch) end-to-end, so the behavior described above is verifiable in a CI run, not just on a live provider.
 
 ## Demo
 

@@ -6,6 +6,7 @@
 - Optimized semantic-cache vector dot product with a runtime AVX path on x86_64 and an unrolled scalar fallback.
 - Removed the unused `fast-hnsw` dependency and marked the old HNSW v0.3.0 spec as a historical/deferred draft.
 - Updated README wording to avoid implying zero-latency behavior or shipped HNSW support.
+- Reactive failover is now **enabled by default** and includes `429` in the default failover status codes (`429, 500, 502, 503, 504`). It remains a no-op until a fallback API key is configured.
 
 ## [0.3.0] - 2026-07-16
 

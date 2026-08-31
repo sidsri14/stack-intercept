@@ -104,9 +104,9 @@ STACK_INTERCEPT_CACHE_PATH=/var/cache/stack-intercept/snapshot.msgpack
 # STACK_INTERCEPT_UPSTREAM_URL=https://api.deepseek.com
 # STACK_INTERCEPT_FALLBACK_URL=https://api.deepseek.com
 # STACK_INTERCEPT_ALLOW_MODEL_REWRITE=false
-# STACK_INTERCEPT_REACTIVE_FAILOVER=false
+# STACK_INTERCEPT_REACTIVE_FAILOVER=true
 # STACK_INTERCEPT_FAILOVER_MODEL=deepseek-chat
-# STACK_INTERCEPT_FAILOVER_STATUS_CODES=500,502,503,504
+# STACK_INTERCEPT_FAILOVER_STATUS_CODES=429,500,502,503,504
 ```
 
 Make sure the runtime user can write to the cache directory:
@@ -127,15 +127,16 @@ export STACK_INTERCEPT_DISABLE_PERSISTENCE=true
 
 ## Reactive failover
 
-Reactive failover is disabled by default. Enable it only after configuring a fallback provider key:
+Reactive failover is on by default but is a no-op until a fallback provider key is configured. Failover handles 429 rate limits and 5xx upstream degradation by re-dispatching to the configured fallback endpoint. Upstream payloads must be compatible with both models if routing across different provider APIs.
 
 ```bash
-STACK_INTERCEPT_REACTIVE_FAILOVER=true
 STACK_INTERCEPT_FALLBACK_URL=https://api.deepseek.com
 STACK_INTERCEPT_FALLBACK_API_KEY=sk-your-fallback-key
 STACK_INTERCEPT_FAILOVER_MODEL=deepseek-chat
-STACK_INTERCEPT_FAILOVER_STATUS_CODES=500,502,503,504,429
+# STACK_INTERCEPT_FAILOVER_STATUS_CODES=429,500,502,503,504  # defaults already include 429
 ```
+
+Disable explicitly with `STACK_INTERCEPT_REACTIVE_FAILOVER=false`.
 
 This is a single retry path for transient failures, not a load balancer or circuit breaker.
 
@@ -217,7 +218,7 @@ systemctl start stack-intercept
 - [ ] Cache path points to a writable directory if persistence enabled
 - [ ] Process runs as a dedicated non-root user
 - [ ] Routing remains opt-in via `STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`
-- [ ] Reactive failover remains opt-in via `STACK_INTERCEPT_REACTIVE_FAILOVER=true`
+- [ ] Reactive failover engages only once `STACK_INTERCEPT_FALLBACK_API_KEY` is configured
 - [ ] Sensitive workloads use `x-stack-intercept-no-route: true` when model rewriting is not acceptable
 - [ ] Sensitive workloads use `x-stack-intercept-no-semantic-cache: true` when semantic cache reuse is not acceptable
 

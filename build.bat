@@ -7,7 +7,7 @@ set "WINSDK_ROOT=C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0"
 set "WINSDK_INCLUDE=C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0"
 
 REM Set LIB for the linker to find import libraries
-set "LIB=%MSVC_ROOT%\lib\x64;%WINSDK_ROOT%\um\x64;%WINSDK_ROOT%\ucrt\x64"
+set "LIB=%MSVC_ROOT%\lib\x64;%WINSDK_ROOT%\um\x64;%WINSDK_ROOT%\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\Debuggers\lib\x64"
 
 REM Set INCLUDE for headers
 set "INCLUDE=%MSVC_ROOT%\include;%WINSDK_INCLUDE%\um;%WINSDK_INCLUDE%\ucrt;%WINSDK_INCLUDE%\shared"
