@@ -53,7 +53,17 @@ No copy-pasted benchmark body, no drift between "benchmark code" and "shipped co
 - **AVX2/FMA path** (`compute_vector_dot_avx2`): gated on `#[target_feature(enable = "avx2,fma")]`, selected only when both features are detected at runtime, and uses fused multiply-add accumulation (`_mm256_fmadd_ps` — 8 `f32` lanes, one rounding per `a·b+c`).
 - **Unrolled scalar fallback** (`compute_vector_dot_unrolled`): four elements per iteration via `as_chunks::<4>()`, numerically identical to the SIMD path up to float-epsilon ordering effects.
 
-Measured on one dev machine (a Windows x86-64 desktop; `avx2=true fma=true avx512f=false`), single-threaded, warm cache, `cargo bench`:
+### Hardware & benchmark methodology
+
+All numbers in this post were captured via `cargo bench` on the machine we develop on — an **Acer Nitro AN515-47 laptop** running **Windows 11 Home** (build 10.0.26200, x86-64) with an **AMD Ryzen 7 7735HS**: 8 cores / 16 threads, Zen 3+ ("Rembrandt") microarchitecture, boost up to ~4.75 GHz. Its cache hierarchy (measured via `GetLogicalProcessorInformation`):
+
+| Cache | Per-core size | Capacity against a 384 KiB bucket |
+|---|---|---|
+| L1d / L1i | 32 KiB / 32 KiB | bucket exceeds L1d |
+| L2 | 512 KiB (4 MiB total) | one bucket ≈ 75% of one core's L2 |
+| L3 | 16 MiB shared | ≈ 40 buckets |
+
+Feature check on this exact CPU: `avx2=true fma=true avx512f=false` — Zen 3+ has no AVX-512. The scan is single-threaded and warm-cache, matching how a real lookup behaves: the bucket is written on cache-fill and read on the next hit, so every candidate's 384 floats are already L2-resident when the scan starts. All four paths come from the **same default release build with no `RUSTFLAGS`** — rustc targets generic `x86-64` (SSE2 baseline), and AVX2/FMA is enabled at runtime by `is_x86_feature_detected!`, exactly as the shipped binary behaves. Values are representative: on a boost-clocked laptop, repeat runs of the same scan land anywhere from ~8.7 to ~9.5 µs depending on power state.
 
 | Path | Single dot (384 dims) | Full bucket scan (256 × 384) | GFLOPS |
 |---|---|---|---|
@@ -69,6 +79,17 @@ Reading the numbers:
 - The runtime dispatcher costs ~0.4 µs per scan (9.88 vs 9.50 µs) — the price of `is_x86_feature_detected!` on every call. For a per-request lookup that runs at most a handful of times, that's noise; we keep the production entry point simple and safe.
 
 To be clear about what these numbers are *not*: they are warm-cache, single-threaded, single-core measurements on one machine. They are not a cross-platform benchmark, and we make no latency-percentile claims. But for the claim that matters — *"a full semantic lookup is bounded single-digit microseconds in L2"* — the margin over the alternatives (unrolled 27 µs, naive 87 µs) is wide enough that the conclusion is robust: **at this dataset size, a sequential AVX2/FMA scan is the right structure, and no index could pay for itself.**
+
+### The obvious objection: why not `-C target-cpu=native`?
+
+"Compile with `RUSTFLAGS=-C target-cpu=native` and let the compiler vectorize it for you" is the standard response to any hand-written SIMD benchmark. We measured that too, and the data strengthens the case for the default build rather than weakening it. Rebuilding the same bench with `-C target-cpu=native` (rustc targets this CPU as `znver3`) in the same session:
+
+- **AVX2+FMA: 8.74 µs** and **dispatcher: 8.75 µs** under native — vs ~9.2–9.5 µs on the generic build, a few percent from microarch tuning. Worthwhile if you control the deployment CPU.
+- **unrolled: 27.08 µs** and **naive: 81.98 µs** under native — indistinguishable from the same baselines on the generic build (unrolled is rock-stable at ~27.0–27.1 µs across every run we've made; naive sits at ~82 µs, with the day-to-day spread in the table above accounting for its session-to-session variation). Effectively unchanged.
+
+That second finding is the interesting one. Given explicit permission to use AVX2 everywhere, rustc's auto-vectorizer still does not turn a scalar dot-product reduction into vector code: both baselines are serial accumulator chains, and LLVM will not reassociate floating-point sums without a fast-math license. The entire speedup is carried by the hand-written intrinsics kernel, which is exactly what the table above already claims.
+
+Which is why we report the default build and ship it: a generic-x86-64 binary plus one runtime-dispatched AVX2/FMA kernel gets the speedup on every CPU that supports the feature and degrades gracefully (scalar fallback) on ones that don't — without betting the deployed binary on a specific microarchitecture.
 
 ---
 
