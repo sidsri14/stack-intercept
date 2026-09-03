@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Why We Rejected HNSW for an AVX2/FMA Linear Scan — StackIntercept</title>
+    <meta name="description" content="StackIntercept's semantic cache never uses a vector index. Every lookup is scoped to a 384 KiB per-context bucket that sits entirely in L2 — so the shipped kernel is a runtime-dispatched AVX2/FMA linear scan. Here's the reasoning and the measurement.">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="Why We Rejected HNSW for an AVX2/FMA Linear Scan in an In-VPC Rust LLM Proxy">
+    <meta property="og:description" content="A vector database is an anti-pattern at N ≤ 256. The measured kernel scans a full 384 KiB semantic bucket in ~9.5 µs — and rustc won't auto-vectorize the scalar fallback even with -C target-cpu=native.">
+    <meta property="og:url" content="https://stackintercept.com/blog/why-we-skipped-hnsw">
+    <link rel="canonical" href="https://stackintercept.com/blog/why-we-skipped-hnsw">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            color: #cfcfcf;
+            font-family: -apple-system, 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+            font-size: 16px;
+            line-height: 1.75;
+            -webkit-font-smoothing: antialiased;
+        }
+        .container {
+            max-width: 740px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 0 2rem 3rem;
+        }
+        nav.topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1.5rem 0;
+            border-bottom: 1px solid #1a1a1a;
+            margin-bottom: 3rem;
+        }
+        .logo {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #fff;
+            letter-spacing: -0.5px;
+            text-decoration: none;
+        }
+        .logo span { color: #555; }
+        .toplink {
+            font-size: 0.8rem;
+            color: #666;
+            text-decoration: none;
+        }
+        .toplink:hover { color: #ccc; }
+        .toplink .arr { color: #333; }
+        header.post-head { margin-bottom: 3rem; }
+        .kicker {
+            font-size: 0.75rem;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: #4ade80;
+            margin-bottom: 1.25rem;
+        }
+        h1 {
+            font-size: 2.1rem;
+            line-height: 1.25;
+            color: #fff;
+            font-weight: 600;
+            letter-spacing: -1px;
+            margin-bottom: 1.25rem;
+        }
+        .meta {
+            font-size: 0.8rem;
+            color: #555;
+            margin-bottom: 2rem;
+        }
+        .meta a { color: #777; }
+        .meta a:hover { color: #ccc; }
+        .deck {
+            border-left: 3px solid #2e2e2e;
+            padding-left: 1.25rem;
+            color: #9a9a9a;
+            font-style: italic;
+            font-size: 0.95rem;
+        }
+        h2 {
+            font-size: 1.25rem;
+            color: #fff;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            margin: 3.5rem 0 1.25rem;
+            padding-top: 1.75rem;
+            border-top: 1px solid #1a1a1a;
+            line-height: 1.4;
+        }
+        h2 .secnum {
+            color: #3a3a3a;
+            font-weight: 500;
+            margin-right: 0.5rem;
+        }
+        h3 {
+            font-size: 1rem;
+            color: #e0e0e0;
+            font-weight: 600;
+            margin: 2.5rem 0 1rem;
+            line-height: 1.5;
+        }
+        p { margin-bottom: 1.25rem; color: #b8b8b8; }
+        strong { color: #f0f0f0; font-weight: 600; }
+        em { color: #c9c9c9; }
+        code {
+            font-family: inherit;
+            font-size: 0.86em;
+            background: #101010;
+            border: 1px solid #1e1e1e;
+            border-radius: 3px;
+            padding: 0.08em 0.4em;
+            color: #fff;
+            white-space: nowrap;
+        }
+        pre {
+            background: #0d0d0d;
+            border: 1px solid #1a1a1a;
+            border-left: 2px solid #333;
+            border-radius: 6px;
+            padding: 1rem 1.25rem;
+            margin: 1.5rem 0 2rem;
+            overflow-x: auto;
+            font-size: 0.85rem;
+            line-height: 1.7;
+        }
+        pre code {
+            background: none;
+            border: none;
+            padding: 0;
+            white-space: pre;
+        }
+        ul {
+            margin: 0 0 1.5rem 0;
+            padding-left: 1.25rem;
+            list-style: none;
+        }
+        ul li {
+            position: relative;
+            padding-left: 1rem;
+            margin-bottom: 0.75rem;
+            color: #b8b8b8;
+        }
+        ul li::before {
+            content: "›";
+            position: absolute;
+            left: 0;
+            color: #3d3d3d;
+        }
+        .table-wrap {
+            margin: 1.5rem 0 2rem;
+            overflow-x: auto;
+            border: 1px solid #1a1a1a;
+            border-radius: 6px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.83rem;
+            background: #0e0e0e;
+        }
+        th {
+            text-align: left;
+            font-weight: 500;
+            font-size: 0.68rem;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            color: #555;
+            padding: 0.7rem 1rem;
+            border-bottom: 1px solid #1a1a1a;
+            white-space: nowrap;
+        }
+        th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        td {
+            padding: 0.6rem 1rem;
+            border-bottom: 1px solid #141414;
+            color: #b0b0b0;
+            white-space: nowrap;
+        }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr.hl td { color: #fff; background: #0f0f0f; }
+        tbody tr.hl td:first-child { box-shadow: inset 2px 0 0 #4ade80; }
+        .cap {
+            font-size: 0.7rem;
+            color: #555;
+            margin: -1rem 0 2.5rem;
+        }
+        .endnote {
+            background: #101010;
+            border: 1px solid #1c1c1c;
+            border-radius: 8px;
+            padding: 1.75rem;
+            margin: 3.5rem 0 2rem;
+            text-align: center;
+        }
+        .endnote p { margin-bottom: 1rem; color: #aaa; }
+        .endnote .btn {
+            display: inline-block;
+            background: #e0e0e0;
+            color: #0a0a0a;
+            border-radius: 4px;
+            padding: 0.65rem 1.25rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+            text-decoration: none;
+            white-space: nowrap;
+            margin: 0.25rem;
+        }
+        .endnote .btn:hover { background: #fff; }
+        .endnote .btn.ghost {
+            background: transparent;
+            color: #777;
+            border: 1px solid #262626;
+        }
+        .endnote .btn.ghost:hover { color: #ccc; border-color: #444; }
+        .srcnote {
+            font-size: 0.7rem;
+            color: #444;
+            text-align: center;
+            margin-top: 1rem;
+        }
+        .srcnote a { color: #666; }
+        .srcnote a:hover { color: #aaa; }
+        footer {
+            padding: 2rem 0 0;
+            font-size: 0.75rem;
+            color: #333;
+            text-align: center;
+            border-top: 1px solid #141414;
+            margin-top: 3rem;
+        }
+        footer a { color: #4a4a4a; text-decoration: none; }
+        footer a:hover { color: #888; }
+        @media (max-width: 600px) {
+            .container { padding: 0 1.25rem 2.5rem; }
+            h1 { font-size: 1.55rem; }
+            h2 { font-size: 1.1rem; }
+            body { font-size: 15px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav class="topbar">
+            <a class="logo" href="/">stackintercept <span>//</span> dev</a>
+            <a class="toplink" href="https://github.com/sidsri14/stack-intercept" target="_blank" rel="noopener">github <span class="arr">↗</span></a>
+        </nav>
+
+        <header class="post-head">
+            <p class="kicker">engineering note</p>
+            <h1>Why We Rejected HNSW for an AVX2/FMA Linear Scan in an In-VPC Rust LLM Proxy</h1>
+            <p class="meta">StackIntercept · 2026-09-03 · ~7 min read &nbsp;·&nbsp; <a href="https://github.com/sidsri14/stack-intercept/blob/master/blog/why-we-skipped-hnsw.md" target="_blank" rel="noopener">markdown source</a></p>
+            <p class="deck">StackIntercept is an open-source, in-VPC Rust proxy for OpenAI-compatible SDKs. It intercepts chat-completion calls to add an exact SHA-256 cache, an opt-in semantic cache, and transparent single-hop failover. This post explains one architectural decision — why its semantic cache does not use a vector index — and the measurement that justified it.</p>
+        </header>
+
+        <p>Every LLM caching layer eventually gets the question: &ldquo;Why aren't you using a vector database for semantic search?&rdquo; The default mental model comes from RAG systems — millions of embeddings, approximate nearest-neighbor (ANN) indexes, HNSW graphs with configurable <code>M</code> and <code>efConstruction</code>. That instinct is wrong for a proxy sitting in front of a chat API, and in this post I want to show the reasoning and the numbers, because the reasoning is <em>scale</em>, not vibes.</p>
+
+        <h2 id="context"><span class="secnum">1.</span> The Context: A vector database is an anti-pattern at this scale</h2>
+
+        <p>StackIntercept's semantic cache works like this: a request arrives, we embed the user's last message with a local BGE-small model, and we look for a matching stored response. To keep hits <em>safe</em>, matches are never computed against the whole corpus. They're computed inside a <strong>per-context bucket</strong>: everything in the request except the last user message (system prompt, tenant, prior turns, model) forms a key, and the embedding is only compared against other embeddings that share that exact context. This is a deliberate safety decision — it prevents cross-tenant and cross-prompt cache collisions.</p>
+
+        <p>The practical consequence is that a single lookup scans <strong>at most 256 embeddings of 384 dimensions</strong> — the bucket cap. That's the entire dataset the search ever touches:</p>
+
+        <pre><code>256 vectors × 384 dims × 4 bytes = 393,216 bytes ≈ 384 KiB</code></pre>
+
+        <p><strong>384 KiB.</strong> That fits in the L2 cache of any modern x86 core, and it is fully sequential memory — the hardware prefetcher's favorite access pattern.</p>
+
+        <p>Now consider what an HNSW graph would add <em>on top of</em> that 384 KiB:</p>
+
+        <ul>
+            <li><strong>Pointer chasing.</strong> Graph traversal is random access by definition. Every hop is a potential TLB miss and cache miss — the exact opposite of a linear, prefetcher-friendly scan.</li>
+            <li><strong>Index build tax.</strong> Every cache write is also a graph insertion: candidate selection, pruning, neighbor updates. That's work on the <em>write path</em> of a cache that exists to make writes cheap.</li>
+            <li><strong>Serialization tax.</strong> A vector database is a server you don't need. All the data already lives in-process. Shipping it over a wire, or even into a separate index structure, costs more than the search it enables.</li>
+            <li><strong>Complexity.</strong> An ANN index is probabilistic — it can <em>miss</em> a real match and return a wrong &ldquo;closest.&rdquo; A linear scan is exact and deterministic.</li>
+        </ul>
+
+        <p>This is why we frame it as an <strong>architectural rejection, not a benchmarked loss</strong>. We did not build an HNSW index, measure it, and find it slower (though we'd be surprised otherwise). We rejected the premise: an index structure exists to avoid scanning data that doesn't fit in cache. At N ≤ 256 and 384 KiB, there is no data that doesn't fit in cache. The overhead of indexing is mathematically unjustifiable, so we never shipped it. (The <code>fast-hnsw</code> dependency we'd considered was removed; the design is explicitly out of scope for v0.3.0.)</p>
+
+        <h2 id="micro-benchmark"><span class="secnum">2.</span> The Micro-Benchmark: Why a sequential AVX2/FMA scan wins</h2>
+
+        <p>The scan budget is worth writing down before measuring. Each 384-dim dot product is 384 fused multiply-adds. A full 256-vector bucket scan is:</p>
+
+        <pre><code>256 × 384 = 98,304 element-wise FMAs
+98,304 / 8 lanes = 12,288 AVX2 FMA instructions</code></pre>
+
+        <p>12,288 instructions, all on 384 KiB of L2-resident data. At typical issue rates this is <em>single-digit microseconds</em> of vector work. The question was whether the implementation could get close to that ceiling — so we built a microbenchmark rather than guessing.</p>
+
+        <p>The benchmark lives in the repo at <code>benches/dot_product.rs</code> and measures the exact production kernel. The crate is split into a library (<code>src/lib.rs</code>) and a binary (<code>src/main.rs</code>), and the benchmark imports directly from the library:</p>
+
+        <pre><code>use stack_intercept::simd::{
+    compute_vector_dot, compute_vector_dot_avx2, compute_vector_dot_unrolled,
+};</code></pre>
+
+        <p>No copy-pasted benchmark body, no drift between &ldquo;benchmark code&rdquo; and &ldquo;shipped code&rdquo; — the bench calls the same functions the proxy serves requests with. The kernel is a runtime-dispatched dot product:</p>
+
+        <ul>
+            <li><strong>AVX2/FMA path</strong> (<code>compute_vector_dot_avx2</code>): gated on <code>#[target_feature(enable = "avx2,fma")]</code>, selected only when both features are detected at runtime, and uses fused multiply-add accumulation (<code>_mm256_fmadd_ps</code> — 8 <code>f32</code> lanes, one rounding per <code>a·b+c</code>).</li>
+            <li><strong>Unrolled scalar fallback</strong> (<code>compute_vector_dot_unrolled</code>): four elements per iteration via <code>as_chunks::&lt;4&gt;()</code>, numerically identical to the SIMD path up to float-epsilon ordering effects.</li>
+        </ul>
+
+        <h3>Hardware &amp; benchmark methodology</h3>
+
+        <p>All numbers in this post were captured via <code>cargo bench</code> on the machine we develop on — an <strong>Acer Nitro AN515-47 laptop</strong> running <strong>Windows 11 Home</strong> (build 10.0.26200, x86-64) with an <strong>AMD Ryzen 7 7735HS</strong>: 8 cores / 16 threads, Zen 3+ (&ldquo;Rembrandt&rdquo;) microarchitecture, boost up to ~4.75 GHz. Its cache hierarchy (measured via <code>GetLogicalProcessorInformation</code>):</p>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Cache</th>
+                        <th>Per-core size</th>
+                        <th>Capacity vs. a 384 KiB bucket</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>L1d / L1i</td>
+                        <td class="num">32 KiB / 32 KiB</td>
+                        <td>bucket exceeds L1d</td>
+                    </tr>
+                    <tr>
+                        <td>L2</td>
+                        <td class="num">512 KiB (4 MiB total)</td>
+                        <td>one bucket ≈ 75% of one core's L2</td>
+                    </tr>
+                    <tr>
+                        <td>L3</td>
+                        <td class="num">16 MiB shared</td>
+                        <td>≈ 40 buckets</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <p>Feature check on this exact CPU: <code>avx2=true fma=true avx512f=false</code> — Zen 3+ has no AVX-512. The scan is single-threaded and warm-cache, matching how a real lookup behaves: the bucket is written on cache-fill and read on the next hit, so every candidate's 384 floats are already L2-resident when the scan starts. All four paths come from the <strong>same default release build with no <code>RUSTFLAGS</code></strong> — rustc targets generic <code>x86-64</code> (SSE2 baseline), and AVX2/FMA is enabled at runtime by <code>is_x86_feature_detected!</code>, exactly as the shipped binary behaves. Values are representative: on a boost-clocked laptop, repeat runs of the same scan land anywhere from ~8.7 to ~9.5 µs depending on power state.</p>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Path</th>
+                        <th class="num">Single dot (384 dims)</th>
+                        <th class="num">Full bucket scan (256 × 384)</th>
+                        <th class="num">GFLOPS</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr class="hl">
+                        <td>AVX2+FMA</td>
+                        <td class="num">95 ns</td>
+                        <td class="num">9.50 µs</td>
+                        <td class="num">20.7</td>
+                    </tr>
+                    <tr>
+                        <td>dispatcher (production)</td>
+                        <td class="num">93 ns</td>
+                        <td class="num">9.88 µs</td>
+                        <td class="num">19.9</td>
+                    </tr>
+                    <tr>
+                        <td>unrolled scalar</td>
+                        <td class="num">151 ns</td>
+                        <td class="num">27.0 µs</td>
+                        <td class="num">7.3</td>
+                    </tr>
+                    <tr>
+                        <td>naive iterator</td>
+                        <td class="num">377 ns</td>
+                        <td class="num">87.3 µs</td>
+                        <td class="num">2.3</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <p class="cap">Default release build, generic x86-64, warm cache, single thread. Acer Nitro AN515-47 · AMD Ryzen 7 7735HS · Windows 11 10.0.26200.</p>
+
+        <p>Reading the numbers:</p>
+
+        <ul>
+            <li>The <strong>full bucket scan is ~9.5 µs</strong> on the AVX2/FMA path — comfortably single-digit microseconds, matching the 12,288-instruction budget analysis. That's <strong>37 ns per candidate vector</strong>.</li>
+            <li>AVX2/FMA is <strong>2.8× faster than the unrolled scalar fallback</strong> and <strong>9.2× faster than a naive iterator</strong>. The naive version isn't a strawman — <code>Iterator::zip().map().sum()</code> is the first implementation everyone writes, and it gets 2.25 GFLOPS because the compiler doesn't auto-vectorize the horizontal reduction reliably.</li>
+            <li>The runtime dispatcher costs ~0.4 µs per scan (9.88 vs 9.50 µs) — the price of <code>is_x86_feature_detected!</code> on every call. For a per-request lookup that runs at most a handful of times, that's noise; we keep the production entry point simple and safe.</li>
+        </ul>
+
+        <p>To be clear about what these numbers are <em>not</em>: they are warm-cache, single-threaded, single-core measurements on one machine. They are not a cross-platform benchmark, and we make no latency-percentile claims. But for the claim that matters — <em>&ldquo;a full semantic lookup is bounded single-digit microseconds in L2&rdquo;</em> — the margin over the alternatives (unrolled 27 µs, naive 87 µs) is wide enough that the conclusion is robust: <strong>at this dataset size, a sequential AVX2/FMA scan is the right structure, and no index could pay for itself.</strong></p>
+
+        <h3>The obvious objection: why not <code>-C target-cpu=native</code>?</h3>
+
+        <p>&ldquo;Compile with <code>RUSTFLAGS="-C target-cpu=native"</code> and let the compiler vectorize it for you&rdquo; is the standard response to any hand-written SIMD benchmark. We measured that too, and the data strengthens the case for the default build rather than weakening it. Rebuilding the same bench with <code>-C target-cpu=native</code> (rustc targets this CPU as <code>znver3</code>) in the same session:</p>
+
+        <ul>
+            <li><strong>AVX2+FMA: 8.74 µs</strong> and <strong>dispatcher: 8.75 µs</strong> under native — vs ~9.2–9.5 µs on the generic build, a few percent from microarch tuning. Worthwhile if you control the deployment CPU.</li>
+            <li><strong>unrolled: 27.08 µs</strong> and <strong>naive: 81.98 µs</strong> under native — indistinguishable from the same baselines on the generic build (unrolled is rock-stable at ~27.0–27.1 µs across every run we've made; naive sits at ~82 µs, with the day-to-day spread in the table above accounting for its session-to-session variation). Effectively unchanged.</li>
+        </ul>
+
+        <p>That second finding is the interesting one. Given explicit permission to use AVX2 everywhere, rustc's auto-vectorizer still does not turn a scalar dot-product reduction into vector code: both baselines are serial accumulator chains, and LLVM will not reassociate floating-point sums without a fast-math license. The entire speedup is carried by the hand-written intrinsics kernel, which is exactly what the table above already claims.</p>
+
+        <p>Which is why we report the default build and ship it: a generic-x86-64 binary plus one runtime-dispatched AVX2/FMA kernel gets the speedup on every CPU that supports the feature and degrades gracefully (scalar fallback) on ones that don't — without betting the deployed binary on a specific microarchitecture.</p>
+
+        <h2 id="resilience"><span class="secnum">3.</span> The Resilience Angle: Single-hop failover beats a better index</h2>
+
+        <p>Once your semantic scan is bounded to single-digit microseconds in L2, the proxy's real bottleneck isn't vector math — <strong>it's upstream API volatility</strong>. This is why we stopped over-optimizing vector indexes and focused on the part of the system that actually determines whether a request succeeds: the connection to the model provider.</p>
+
+        <p>An LLM proxy lives or dies by what happens when the upstream is unhappy. Providers return <code>429</code> rate-limits and <code>5xx</code> outages constantly, in-VPC or not. A cache miss is not rare — most traffic is genuinely new. So the failure mode that matters most is: <em>we missed the cache, the upstream errored, and the user gets an error instead of a completion.</em></p>
+
+        <p>StackIntercept's answer is <strong>reactive single-hop failover</strong>: when the primary upstream fails with a transport error or a configured status code (<code>429, 500, 502, 503, 504</code> by default), the proxy transparently re-dispatches the request to a fallback provider — optionally rewriting the model name (e.g. <code>gpt-4o</code> → <code>deepseek-chat</code>) so the retry is cost-effective. It's a single hop, not a retry storm: exactly one failover attempt, then the error surfaces. It is off by default <em>in effect</em> — it stays a no-op until a fallback API key is configured — and it never retries on the path that would violate a caller's assumptions. Each failover increments a <code>reactive_failovers</code> counter on the admin metrics endpoint, so the behavior is observable, not magic.</p>
+
+        <p>Why does this matter more than a fancier index? A semantic cache improves the <em>happy path</em> (cache hit latency). Failover decides whether the <em>unhappy path</em> produces a served request or a hard failure. In production, the unhappy path is the one users remember. A 429 that gets transparently served by the fallback is invisible; a 429 that surfaces to the client is a ticket. Optimizing an index that the happy path doesn't need is optimizing the wrong side of the SLO.</p>
+
+        <h2 id="code"><span class="secnum">4.</span> The Code</h2>
+
+        <p>Everything in this post is reproducible. The repo is MIT-licensed and open source:</p>
+
+        <p><strong>https://github.com/sidsri14/stack-intercept</strong></p>
+
+        <p>The files that back the claims above:</p>
+
+        <ul>
+            <li><code>src/simd.rs</code> — the AVX2/FMA kernel, the unrolled fallback, and the runtime dispatcher (with tests asserting the two paths agree within float-epsilon).</li>
+            <li><code>benches/dot_product.rs</code> — the microbenchmark; run it yourself with <code>cargo bench</code> (no API keys or model weights required).</li>
+            <li><code>src/main.rs</code> — the reactive failover dispatch and the <code>reactive_failovers</code> metric.</li>
+            <li><code>test_failover.py</code> — integration tests for connection-refused failover, 5xx handling, model rewriting, and disabled mode.</li>
+        </ul>
+
+        <p>If you're building a caching layer in front of LLM APIs, steal the decision procedure rather than the code: <strong>measure your actual lookup dataset before reaching for an index, and spend your resilience budget on the upstream — not the vector math.</strong></p>
+
+        <div class="endnote">
+            <p><strong>StackIntercept</strong> — Rust LLM proxy: exact SHA-256 cache, opt-in semantic cache, reactive single-hop failover.</p>
+            <a class="btn" href="https://github.com/sidsri14/stack-intercept" target="_blank" rel="noopener">View on GitHub ↗</a>
+            <a class="btn ghost" href="/">stackintercept.com</a>
+        </div>
+        <p class="srcnote">Prefer plain markdown? <a href="https://github.com/sidsri14/stack-intercept/blob/master/blog/why-we-skipped-hnsw.md" target="_blank" rel="noopener">Read this post in the repo ↗</a></p>
+
+        <footer>
+            <a href="/">stackintercept.com</a> — Rust-native LLM proxy engine
+        </footer>
+    </div>
+</body>
+</html>

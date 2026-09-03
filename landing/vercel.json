@@ -4,9 +4,15 @@
     {
       "src": "index.html",
       "use": "@vercel/static"
+    },
+    {
+      "src": "blog/why-we-skipped-hnsw.html",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
+    { "src": "/blog/why-we-skipped-hnsw", "dest": "/blog/why-we-skipped-hnsw.html" },
+    { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
