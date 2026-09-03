@@ -11,10 +11,13 @@ Routing is opt-in (`STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`). Cache keys inclu
 ## File Map
 
 ### Source
+- `src/lib.rs` — Library crate (`stack_intercept`) exposing `pub mod simd`. The binary and microbenchmark import hot paths from here.
+- `src/simd.rs` — SIMD dot product for semantic similarity: `compute_vector_dot()` (runtime AVX2+FMA dispatch), `compute_vector_dot_avx2()` (`#[target_feature(enable = "avx2,fma")]`, `_mm256_fmadd_ps`), `compute_vector_dot_unrolled()` (`as_chunks::<4>()` scalar fallback). Numerically identical paths; FMA vs scalar differ only at float-epsilon relative scale.
 - `src/main.rs` — Axum HTTP server, `/v1/chat/completions` handler, AppState, streaming passthrough, cache orchestration, `Metrics` struct (8 AtomicU64 counters), 5 admin route handlers, `check_admin_auth()`, `is_loopback()`
 - `src/embeddings.rs` — `LocalPredictor` struct: `init_from_disk()`, `encode_text(&str) -> Vec<f32>`. BGE-small-en-v1.5 model, 384-dim, mean pooling + L2 normalization
 - `src/cache.rs` — `cache_key_hash()` (SHA256 of canonical full payload + provider + tenant + routing namespace), `is_eligible()` checks, `ExactCache` (bounded TTL-based with `Vec<u8>` body, +`remove`/`clear`/`len`/`is_empty`/`max_entries`/`default_ttl_secs`), `CachedEntry`, `CacheItem`, `evict_bucket()`/`evict_global()`, Snapshot types (rmp-serde MessagePack persistence)
 - `src/router.rs` — `evaluate_routing()` inspects payload, classifies prompt complexity, decides whether to downgrade premium models to cheap models. Opt-in via `STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`. `RouteDecision` with `cache_namespace()`.
+- `benches/dot_product.rs` — Microbenchmark of the similarity scan (single dot + full 256-item bucket scan) comparing dispatcher/AVX2+FMA/unrolled/naive. Imports from `stack_intercept::simd`. Run with `cargo bench`.
 - `src/config.rs` — `FileConfig` (TOML deserialization, `#[serde(deny_unknown_fields)]`), `ProxyConfig` (`defaults()`/`load()`/`from_env()`/`apply_file_config()`/`apply_env_overrides()`), `CacheMode` enum. All 14 settings plus env-override-warnings for parse failures.
 
 ### Scripts & Config
@@ -52,7 +55,7 @@ Upstream provider SSE bytes are forwarded as-is via `axum::body::Body::from_stre
 Semantic search is never done on the last-user-message alone. It requires matching exact context key (everything except the last message) first, then embedding similarity within that bucket. This prevents unsafe cache hits across different tenants, system prompts, or models.
 
 ### Semantic search implementation
-Semantic mode uses a capped per-context `Vec<CacheItem>` bucket and cosine dot-product verification. The bucket cap keeps lookup cost bounded, and the dot-product path uses runtime AVX acceleration on x86_64 with an unrolled scalar fallback.
+Semantic mode uses a capped per-context `Vec<CacheItem>` bucket and cosine dot-product verification. The bucket cap keeps lookup cost bounded, and the dot-product path uses runtime AVX2+FMA acceleration on x86_64 (`src/simd.rs`, `_mm256_fmadd_ps`) with an unrolled scalar fallback.
 
 HNSW is not implemented in v0.3.0. Do not claim HNSW support unless a real indexed implementation, config surface, persistence behavior, and correctness tests are added.
 

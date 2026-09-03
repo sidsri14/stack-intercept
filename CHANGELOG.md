@@ -2,8 +2,12 @@
 
 ## Unreleased
 
+### Added
+- `benches/dot_product.rs` — microbenchmark for the semantic-cache similarity scan (single 384-dim dot plus a full 256-item bucket scan) across the dispatcher, AVX2+FMA, unrolled, and naive paths. Imports directly from the library crate; run with `cargo bench`.
+
 ### Changed
-- Optimized semantic-cache vector dot product with a runtime AVX path on x86_64 and an unrolled scalar fallback.
+- Split the crate into a library (`src/lib.rs`, exposing `stack_intercept::simd`) and the binary (`src/main.rs`). The dot-product kernel now lives in `src/simd.rs` and is imported by both the proxy and the benchmark, eliminating copy-paste drift.
+- Upgraded the SIMD dot product from AVX to **AVX2+FMA**: the kernel is gated on `#[target_feature(enable = "avx2,fma")]`, selected at runtime only when both `avx2` and `fma` are detected, and uses fused multiply-add accumulation (`_mm256_fmadd_ps`). The unrolled scalar fallback (`as_chunks::<4>()`) is unchanged and remains the safe path for CPUs without AVX2+FMA.
 - Removed the unused `fast-hnsw` dependency and marked the old HNSW v0.3.0 spec as a historical/deferred draft.
 - Updated README wording to avoid implying zero-latency behavior or shipped HNSW support.
 - Reactive failover is now **enabled by default** and includes `429` in the default failover status codes (`429, 500, 502, 503, 504`). It remains a no-op until a fallback API key is configured.

@@ -32,3 +32,15 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# The dot-product microbenchmark measures a hot SIMD loop; give it the same
+# optimization profile as the shipped release binary.
+[profile.bench]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[[bench]]
+name = "dot_product"
+path = "benches/dot_product.rs"
+harness = false
