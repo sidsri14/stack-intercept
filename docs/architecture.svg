@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+
+  <rect width="980" height="620" fill="#ffffff"/>
+
+  <rect x="40" y="40" width="300" height="70" rx="10" fill="#1f2937"/>
+  <text x="190" y="72" fill="#ffffff" font-size="16" text-anchor="middle" font-weight="bold">Client App</text>
+  <text x="190" y="94" fill="#9ca3af" font-size="13" text-anchor="middle">OpenAI SDK</text>
+
+  <line x1="180" y1="110" x2="180" y2="185" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="200" y="150" fill="#6b7280" font-size="12">POST /v1/chat/completions</text>
+
+  <rect x="40" y="190" width="300" height="350" rx="10" fill="#f3f4f6" stroke="#d1d5db"/>
+  <rect x="40" y="190" width="300" height="46" rx="10" fill="#111827"/>
+  <text x="190" y="220" fill="#ffffff" font-size="15" text-anchor="middle" font-weight="bold">StackIntercept :8080</text>
+
+  <text x="158" y="258" fill="#374151" font-size="13">1. Evaluate routing (opt-in)</text>
+  <text x="158" y="286" fill="#374151" font-size="13">2. Exact cache – O(1) SHA-256 lookup</text>
+  <text x="158" y="314" fill="#374151" font-size="13">3. Semantic scan (opt-in, capped)</text>
+  <text x="158" y="342" fill="#374151" font-size="13">4. Forward to LLM provider</text>
+  <text x="158" y="370" fill="#374151" font-size="13">5. Cache response on success</text>
+  <text x="158" y="398" fill="#374151" font-size="13">6. Return + transparent headers</text>
+
+  <line x1="340" y1="270" x2="430" y2="270" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="440" y="240" width="240" height="60" rx="8" fill="#dc2626"/>
+  <text x="560" y="266" fill="#ffffff" font-size="14" text-anchor="middle" font-weight="bold">Upstream Provider</text>
+  <text x="560" y="286" fill="#fecaca" font-size="12" text-anchor="middle">DeepSeek / OpenAI / etc.</text>
+
+  <rect x="440" y="320" width="240" height="60" rx="8" fill="#7c3aed"/>
+  <text x="560" y="346" fill="#ffffff" font-size="14" text-anchor="middle" font-weight="bold">Fallback Provider</text>
+  <text x="560" y="366" fill="#ddd6fe" font-size="12" text-anchor="middle">429 / 5xx re-dispatch</text>
+
+  <line x1="340" y1="380" x2="430" y2="380" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="440" y="350" width="240" height="60" rx="8" fill="#2563eb"/>
+  <text x="560" y="376" fill="#ffffff" font-size="14" text-anchor="middle" font-weight="bold">In-memory Cache</text>
+  <text x="560" y="396" fill="#bfdbfe" font-size="12" text-anchor="middle">Exact: Hash map · Semantic: cosine</text>
+
+  <g font-size="12" fill="#6b7280">
+    <text x="440" y="200">Responses:</text>
+    <text x="440" y="218">x-stack-intercept: hit | miss | error</text>
+    <text x="440" y="236">x-stack-intercept-route: passthrough | fallback</text>
+  </g>
+</svg>

@@ -38,6 +38,19 @@ What StackIntercept implements — and what it deliberately does not:
 
 ## Quickstart (1 minute)
 
+### One-line Docker run (~10 seconds)
+
+The image is published to GitHub Container Registry on each tagged release:
+
+```bash
+docker run -d --name stack-intercept -p 8080:8080 \
+  ghcr.io/sidsri14/stack-intercept:latest
+```
+
+Point your SDK at `http://127.0.0.1:8080/v1` — requests pass through with your
+existing provider key in the `Authorization` header (nothing to set server-side).
+For a fuller local setup with admin routes and metrics, use the Compose quickstart below.
+
 ### Docker quickstart
 
 ```bash
@@ -63,6 +76,8 @@ docker compose -f docker-compose.trial.yml up --build
 ```
 
 Then point one worker or local script at `http://127.0.0.1:8080/v1`.
+
+**Enterprise staging trials:** direct contact — <sidsri1502@gmail.com>.
 
 Trial docs:
 - [Trial runbook](docs/trial-runbook.md)
@@ -279,6 +294,8 @@ curl -X DELETE http://127.0.0.1:8080/admin/cache
 ```
 
 ## Architecture
+
+![StackIntercept architecture](docs/architecture.svg)
 
 ```
                     ┌──────────────────────┐
