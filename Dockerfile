@@ -26,9 +26,6 @@ RUN apt-get update && apt-get install -y libssl3 ca-certificates curl && rm -rf 
 COPY --from=builder /app/target/release/stack-intercept /app/stack-intercept
 COPY download_model.sh ./
 
-# Download BGE model for semantic caching
-RUN mkdir -p /app/model && bash download_model.sh /app/model && rm download_model.sh
-
 EXPOSE 8080
 ENV STACK_INTERCEPT_CACHE_MODE=exact
 ENV STACK_INTERCEPT_UPSTREAM_URL=https://api.openai.com

@@ -193,6 +193,31 @@ async fn main() {
 
     let predictor = if config.cache_mode == config::CacheMode::Semantic {
         println!("Initializing BGE Local Embedding Weights...");
+        let model_dir =
+            std::env::var("STACK_INTERCEPT_MODEL_DIR").unwrap_or_else(|_| "model".to_string());
+        if !std::path::Path::new(&model_dir)
+            .join("model.safetensors")
+            .exists()
+        {
+            if std::env::var("ALLOW_MODEL_DOWNLOAD").as_deref() == Ok("true") {
+                println!("Downloading BGE weights into '{}' ...", model_dir);
+                let status = std::process::Command::new("bash")
+                    .arg("download_model.sh")
+                    .arg(&model_dir)
+                    .status()
+                    .expect("failed to run download_model.sh");
+                if !status.success() {
+                    eprintln!("BGE weight download failed; run `make fetch-weights` and retry.");
+                    std::process::exit(1);
+                }
+            } else {
+                eprintln!(
+                    "BGE weights not found at '{}'. Run `make fetch-weights`, mount a model volume, or set ALLOW_MODEL_DOWNLOAD=true to download on startup.",
+                    model_dir
+                );
+                std::process::exit(1);
+            }
+        }
         Some(Arc::new(
             LocalPredictor::init_from_disk().expect("Failed to bind local model weights"),
         ))

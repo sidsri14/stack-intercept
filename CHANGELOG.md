@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## [0.3.1] - 2026-09-26
 
 ### Added
+- **Hermetic Docker build**: the image no longer downloads BGE model weights at build time. The proxy now fails fast with a clear message when semantic mode is requested without weights (run `make fetch-weights` or mount a model volume), and `ALLOW_MODEL_DOWNLOAD=true` triggers a one-time runtime download into `STACK_INTERCEPT_MODEL_DIR` on startup.
+- `Makefile` with a `fetch-weights` target for the one-time model download.
 - `benches/dot_product.rs` — microbenchmark for the semantic-cache similarity scan (single 384-dim dot plus a full 256-item bucket scan) across the dispatcher, AVX2+FMA, unrolled, and naive paths. Imports directly from the library crate; run with `cargo bench`.
 
 ### Changed

@@ -164,12 +164,21 @@ Cache rules:
 Enable with `STACK_INTERCEPT_CACHE_MODE=semantic`. Uses local BGE-small-en-v1.5 embeddings (384-dim, CPU, ~133 MB model) to find semantically similar prompts within the same conversation context.
 
 ```bash
-# Download model weights first (one-time, 133 MB)
-./download_model.sh
-
-# Start with semantic mode
+# Fetch weights once (133 MB), then start in semantic mode
+make fetch-weights
 STACK_INTERCEPT_CACHE_MODE=semantic cargo run
 ```
+
+Weights are **not** baked into the Docker image. Either mount a volume with the weights, or set `ALLOW_MODEL_DOWNLOAD=true` so the proxy downloads them into `STACK_INTERCEPT_MODEL_DIR` on first startup:
+
+```bash
+docker run -d --name stack-intercept -p 8080:8080 \
+  -e STACK_INTERCEPT_CACHE_MODE=semantic \
+  -e ALLOW_MODEL_DOWNLOAD=true \
+  ghcr.io/sidsri14/stack-intercept:latest
+```
+
+If weights are missing and the opt-in is not set, startup fails fast with instructions (`make fetch-weights`, mount a model volume, or set `ALLOW_MODEL_DOWNLOAD=true`).
 
 Safety design:
 - Context key hashes everything **except** the last user message (system prompt, conversation history, model, tenant, tools schema)
@@ -230,6 +239,7 @@ Failover is intentionally conservative:
 | `STACK_INTERCEPT_UPSTREAM_URL` | `https://api.deepseek.com` | Primary LLM provider |
 | `STACK_INTERCEPT_CACHE_MODE` | `exact` | `off`, `exact`, or `semantic` |
 | `STACK_INTERCEPT_MODEL_DIR` | `./model` | Path to BGE model files (semantic mode) |
+| `ALLOW_MODEL_DOWNLOAD` | `false` | Download missing BGE weights on startup (semantic mode) |
 | `STACK_INTERCEPT_TENANT_ID_HEADER` | (none) | HTTP header for tenant cache isolation |
 | `STACK_INTERCEPT_ALLOW_MODEL_REWRITE` | `false` | Enable model routing (opt-in) |
 | `STACK_INTERCEPT_FALLBACK_URL` | `https://api.deepseek.com` | Fallback provider for routed requests |
