@@ -36,7 +36,7 @@ What StackIntercept implements — and what it deliberately does not:
 | [ ] | Neural semantic caching | Available via Candle BGE (opt-in), off by default in exact mode. |
 | [ ] | Tenant rate-limiting / spend caps | Omitted — YAGNI; handled downstream or via edge WAF. |
 
-## Quickstart (1 minute)
+## Quickstart
 
 ### One-line Docker run (~10 seconds)
 
@@ -65,6 +65,10 @@ curl http://127.0.0.1:8080/admin/metrics/prometheus \
 
 The bundled Compose file is development-oriented. For real deployments, set your provider keys through your secret manager or `.env`, change `STACK_INTERCEPT_ADMIN_KEY`, and keep the proxy behind TLS/private networking.
 
+The default image is exact-cache-only and does **not** download embedding model
+weights. For the opt-in semantic mode, use the weight-fetch or mounted-volume
+paths in [Semantic mode](#semantic-mode-opt-in).
+
 ### Staging trial package
 
 For a safe exact-cache-only staging trial:
@@ -84,6 +88,13 @@ Trial docs:
 - [Security notes](docs/security.md)
 - [OpenAI Python example](examples/openai-python)
 - [OpenAI Node example](examples/openai-node)
+
+For a provider-free, local verification of caching, routing headers, and mock upstream behavior, run:
+
+```bash
+cargo build
+python test_demo.py
+```
 
 ### Local Rust quickstart
 

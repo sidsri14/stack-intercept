@@ -85,9 +85,10 @@ Expected counters after repeated deterministic requests:
 - `stack_intercept_exact_hits` increases on repeated identical requests
 - tenant labels appear when `x-tenant-id` is sent
 
-## Tenant Test
+## Exact-cache test
 
-Send the same request with different tenants:
+Send this request twice with the same tenant. The first response should include
+`x-stack-intercept: miss`; the second should include `x-stack-intercept: hit`.
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -97,7 +98,13 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say pong."}],"temperature":0}'
 ```
 
-Repeat with `x-tenant-id: trial-b`. The first request per tenant should miss; repeated requests for the same tenant should hit.
+Repeat the same command once. Then fetch the Prometheus endpoint again to see
+one miss and one exact hit for `trial-a`.
+
+## Tenant-isolation test
+
+Send the same payload with `x-tenant-id: trial-b`. It should miss because cache
+entries are scoped to the tenant. A second `trial-b` request should then hit.
 
 ## Rollback
 
