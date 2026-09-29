@@ -60,9 +60,9 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
     override_lock = threading.Lock()
 
     @classmethod
-    def set_override(cls, status, headers_list, body):
+    def set_override(cls, status, headers_list, body, close_early=False):
         with cls.override_lock:
-            cls.override = (status, headers_list, body)
+            cls.override = (status, headers_list, body, close_early)
 
     def do_POST(self):
         global mock_request_count
@@ -71,13 +71,16 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
 
         with MockHandler.override_lock:
             if MockHandler.override is not None:
-                status, headers_list, resp_body = MockHandler.override
+                status, headers_list, resp_body, close_early = MockHandler.override
                 MockHandler.override = None
                 self.send_response(status)
                 for k, v in headers_list:
                     self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(resp_body)
+                if close_early:
+                    self.wfile.flush()
+                    self.close_connection = True
                 return
 
         with mock_request_lock:
@@ -92,8 +95,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def set_override(status, headers_list, body):
-    MockHandler.set_override(status, headers_list, body)
+def set_override(status, headers_list, body, close_early=False):
+    MockHandler.set_override(status, headers_list, body, close_early)
 
 
 def start_mock():
@@ -280,7 +283,8 @@ def test_persistence_disable():
 
 def test_sse_mid_stream_error():
     """
-    Mid-stream upstream error should return SSE error frame with [DONE].
+    A truncated upstream SSE response should return an error frame and must not
+    cache the partial response.
     """
     print("=" * 60)
     print("Test: SSE — mid-stream upstream error returns SSE error frame")
@@ -290,8 +294,6 @@ def test_sse_mid_stream_error():
         print("  FAILED: Proxy did not start")
         return
 
-    # A partial SSE response that might trigger a mid-stream error
-    # We use a payload that the mock handles normally but the stream collects
     payload = {
         "model": "mock-model",
         "messages": [{"role": "user", "content": "SSE error test"}],
@@ -299,13 +301,28 @@ def test_sse_mid_stream_error():
         "stream": True,
     }
 
-    # Set override to return SSE data
-    set_override(200, [("Content-Type", "text/event-stream")], sse_response.encode())
+    partial_sse = 'data: {"id":"partial","choices":[{"delta":{"content":"Mock"}}]}\n\n'.encode()
+    set_override(
+        200,
+        [
+            ("Content-Type", "text/event-stream"),
+            ("Content-Length", str(len(partial_sse) + 32)),
+        ],
+        partial_sse,
+        close_early=True,
+    )
     hit, status, body, headers = send_request(payload)
     check("status is 200", status == 200, f"(status: {status})")
     check("content-type is text/event-stream", "text/event-stream" in headers.get("content-type", ""))
-    check("body contains SSE data", "data:" in body)
+    check("body contains partial SSE data", '"partial"' in body)
+    check("body contains error frame", '"error"' in body, f"(body: {body[:120]})")
     check("body contains [DONE]", "[DONE]" in body)
+
+    # The override is consumed. A cache hit here would replay the partial body,
+    # which is the regression this test protects against.
+    hit, status, body, _ = send_request(payload)
+    check("truncated stream is not cached", hit != "hit", f"(got: {hit})")
+    check("retry reaches upstream", "Mock upstream response" in body)
 
     proxy.terminate()
     proxy.wait(timeout=5)

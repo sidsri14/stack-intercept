@@ -24,7 +24,7 @@ use reqwest::Client;
 use serde::Serialize;
 use stack_intercept::simd::compute_vector_dot;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 const ALIGNMENT_BAR: f32 = 0.93;
@@ -1297,6 +1297,8 @@ async fn handle_intercept(
 
                 let raw_byte_accumulator = Arc::new(std::sync::Mutex::new(Vec::new()));
                 let accumulator_clone = Arc::clone(&raw_byte_accumulator);
+                let stream_completed = Arc::new(AtomicBool::new(true));
+                let completion_clone = Arc::clone(&stream_completed);
 
                 // Forward chunks transparently — no model-name masking.
                 // Route headers inform the client of the actual provider.
@@ -1310,6 +1312,7 @@ async fn handle_intercept(
                             Ok(bytes)
                         }
                         Err(e) => {
+                            completion_clone.store(false, Ordering::Relaxed);
                             let error_frame = format!(
                                 "data: {}\n\ndata: [DONE]\n\n",
                                 serde_json::json!({"error": {"message": format!("Upstream stream error: {}", e)}})
@@ -1321,7 +1324,10 @@ async fn handle_intercept(
                 // When stream ends, flush accumulated bytes to cache
                 let stream = stream.chain(stream::once(async move {
                     let final_bytes = accumulator_clone.lock().unwrap().clone();
-                    if !final_bytes.is_empty() && is_success {
+                    if !final_bytes.is_empty()
+                        && is_success
+                        && stream_completed.load(Ordering::Relaxed)
+                    {
                         if is_cache_eligible {
                             if let Some(ref key_hash) = cache_key_hash_clone {
                                 state_clone
