@@ -5,6 +5,9 @@ edition = "2021"
 license = "MIT"
 description = "Local OpenAI-compatible cost-control proxy: exact/semantic caching, model routing, and reactive failover"
 repository = "https://github.com/sidsri14/stack-intercept"
+homepage = "https://stackintercept.com"
+documentation = "https://github.com/sidsri14/stack-intercept/blob/main/README.md"
+readme = "README.md"
 keywords = ["openai", "proxy", "cache", "llm", "semantic-cache"]
 categories = ["network-programming", "web-programming"]
 
