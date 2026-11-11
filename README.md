@@ -403,3 +403,12 @@ python benchmark.py
 ## License
 
 MIT
+
+---
+
+## Services & Commercial Kits
+
+- **Contract Engineering ($60/hr)** — Rust proxies, Solana infrastructure, and LLM gateway reliability: [Upwork Profile](https://www.upwork.com/freelancers/~01f93f1a56b9ef1b8d)
+- **Portfolio, Articles & Starter Kits**: [sidsri14.github.io](https://sidsri14.github.io/)
+- **Direct Contact**: `sidsri1502@gmail.com`
+
