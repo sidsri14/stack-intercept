@@ -91,10 +91,7 @@ fn has_unsafe_features(payload: &Value) -> bool {
         }
     }
     // Multimodal content (images, files, etc.)
-    if has_multimodal_content(payload) {
-        return true;
-    }
-    false
+    has_multimodal_content(payload)
 }
 
 /// Check whether any message contains an explicit requirement to use a
