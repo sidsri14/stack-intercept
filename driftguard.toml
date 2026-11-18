@@ -1,0 +1,37 @@
+env_files = [".env.example"]
+deployment_manifests = [
+    ".env.production",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+    "k8s/**/*.yaml",
+    "k8s/**/*.yml",
+    "kubernetes/**/*.yaml",
+    "kubernetes/**/*.yml",
+    "vercel.json",
+    "netlify.toml",
+]
+ignore_dirs = [
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".venv",
+    "__pycache__",
+]
+source_globs = [
+    "**/*.js",
+    "**/*.jsx",
+    "**/*.ts",
+    "**/*.tsx",
+    "**/*.mjs",
+    "**/*.cjs",
+    "**/*.py",
+    "**/*.rs",
+]
+ignore_env_keys = []
+
+[prompts]

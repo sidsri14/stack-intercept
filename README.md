@@ -1,6 +1,7 @@
 # StackIntercept
 
 [![CI](https://github.com/sidsri14/stack-intercept/actions/workflows/ci.yml/badge.svg)](https://github.com/sidsri14/stack-intercept/actions/workflows/ci.yml)
+[![DriftGuard CI](https://img.shields.io/badge/CI-DriftGuard%20Protected-blue?logo=github)](https://github.com/marketplace/actions/driftguard-ci-guard)
 [![GitHub Release](https://img.shields.io/github/v/release/sidsri14/stack-intercept?logo=github)](https://github.com/sidsri14/stack-intercept/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
