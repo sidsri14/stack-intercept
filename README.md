@@ -5,7 +5,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/sidsri14/stack-intercept?logo=github)](https://github.com/sidsri14/stack-intercept/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**High-performance in-VPC LLM proxy in Rust: transparent upstream failover, in-memory SHA-256 exact deduplication, and Prometheus observability.** Sits between your app and an LLM provider. Deduplicates identical requests locally, fails over to a fallback provider on 429 rate limits and 5xx upstream degradation, and optionally routes simple prompts to cheaper models.
+**LLM API proxy in Rust: single-hop upstream failover, in-memory SHA-256 exact deduplication, and Prometheus observability.** Sits between your app and an LLM provider. Deduplicates identical requests locally, fails over to a fallback provider on 429 rate limits and 5xx upstream degradation, and optionally routes eligible prompts to an alternative model.
 
 ```
 Your App  →  StackIntercept (:8080)  →  LLM Provider (DeepSeek, OpenAI, etc.)
@@ -22,7 +22,7 @@ Providers throttle and degrade; LLM API costs add up fast. StackIntercept sits b
 - **Transparent failover**: When the primary upstream returns a 429 rate limit or 5xx degradation, the request is re-dispatched once to the configured fallback endpoint. On by default, a no-op until a fallback API key is configured.
 - **Exact deduplication**: Repeat a request verbatim → get the cached response from memory with no upstream API call.
 - **Semantic cache**: Ask "How do I delete a file in Python?" then "How do I remove a file?" — second hits cache if the conversation context matches.
-- **Model routing**: Send `gpt-4o` for everything → simple prompts automatically go to `deepseek-chat` (~5% the cost). Opt-in, transparent, safe.
+- **Model routing**: With model rewriting enabled, eligible `gpt-4o` requests can be sent to `deepseek-chat`. Routing decisions are reported in response headers.
 
 ### Feature Reality Matrix
 
@@ -39,7 +39,7 @@ What StackIntercept implements — and what it deliberately does not:
 
 ## Quickstart
 
-### One-line Docker run (~10 seconds)
+### One-line Docker run
 
 The image is published to GitHub Container Registry on each tagged release:
 
@@ -199,7 +199,7 @@ Safety design:
 
 ### Model routing (opt-in)
 
-Enable with `STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`. When your app sends `gpt-4o` for a simple prompt, StackIntercept can route it to `deepseek-chat` instead — saving 90-95% on that request.
+Enable with `STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true`. When your app sends `gpt-4o` for a simple prompt, StackIntercept can route it to `deepseek-chat` instead. This changes the model serving the request; cost, latency, and output quality depend on the providers and workload.
 
 ```bash
 export STACK_INTERCEPT_ALLOW_MODEL_REWRITE=true
@@ -396,7 +396,7 @@ python benchmark.py
 
 ## What it's not
 
-- Not a load balancer. No round-robin, health checks, circuit breaking, or provider pool. Reactive failover is a single opt-in retry path.
+- Not a load balancer. No round-robin, health checks, circuit breaking, or provider pool. Reactive failover is a single retry path, enabled by default and inactive until a fallback API key is configured.
 - Not an API gateway. No rate limiting, key management, or user auth.
 - Not a single-binary deployment for semantic mode (requires model weights).
 - Not a streaming-aware semantic cache (SSE responses are cached but not semantically deduplicated in streaming).
